@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orqis"
+version = "0.1.0"
+description = "Autonomous self-healing ops for AI agents and DevOps pipelines"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Orqis" }]
+keywords = ["llmops", "observability", "ai-agents", "devops", "monitoring"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "anthropic>=0.40.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "websockets>=13.0",
+    "redis[hiredis]>=5.2.0",
+    "httpx>=0.28.0",
+    "pydantic>=2.10.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0.0"]
+langchain = ["langchain>=0.1.0"]
+
+[project.scripts]
+orqis = "orqis.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["orqis*"]
+exclude = ["orqis.tests*", ".venv*", "dashboard*"]
+
+[tool.setuptools.package-data]
+orqis = ["py.typed"]

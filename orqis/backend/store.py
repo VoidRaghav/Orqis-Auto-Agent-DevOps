@@ -16,7 +16,7 @@ from typing import Optional
 import redis.asyncio as aioredis
 
 from .. import config
-from ..backend.models import LogEvent
+from ..backend.models import Incident, IncidentStatus, LogEvent, TraceEvent
 
 _redis: Optional[aioredis.Redis] = None
 
@@ -55,6 +55,99 @@ async def update_interpretation(event_id: str, interpretation: str) -> Optional[
     await r.set(key, json.dumps(data), keepttl=True)
 
     return LogEvent(**data)
+
+
+async def save_trace_event(event: TraceEvent) -> None:
+    r = await get_redis()
+    key = f"orqis:trace:{event.id}"
+    score = event.timestamp.timestamp()
+    payload = event.model_dump_json()
+
+    pipe = r.pipeline()
+    pipe.set(key, payload, ex=86400)
+    pipe.zadd("orqis:traces:timeline", {event.id: score})
+    pipe.zremrangebyrank("orqis:traces:timeline", 0, -(config.REDIS_EVENT_LIMIT + 1))
+    await pipe.execute()
+
+
+async def update_trace_interpretation(event_id: str, interpretation: str) -> bool:
+    r = await get_redis()
+    key = f"orqis:trace:{event_id}"
+    raw = await r.get(key)
+    if not raw:
+        return False
+    data = json.loads(raw)
+    data["interpretation"] = interpretation
+    await r.set(key, json.dumps(data), keepttl=True)
+    return True
+
+
+async def get_recent_traces(limit: int = 100) -> list[TraceEvent]:
+    r = await get_redis()
+    ids = await r.zrange("orqis:traces:timeline", -limit, -1)
+    if not ids:
+        return []
+    pipe = r.pipeline()
+    for tid in ids:
+        pipe.get(f"orqis:trace:{tid}")
+    raws = await pipe.execute()
+    events = []
+    for raw in raws:
+        if raw:
+            try:
+                events.append(TraceEvent(**json.loads(raw)))
+            except Exception:
+                pass
+    return events
+
+
+async def save_incident(incident: Incident) -> None:
+    r = await get_redis()
+    key = f"orqis:incident:{incident.id}"
+    score = incident.created_at.timestamp()
+    pipe = r.pipeline()
+    pipe.set(key, incident.model_dump_json(), ex=604800)  # TTL: 7 days
+    pipe.zadd("orqis:incidents:timeline", {incident.id: score})
+    await pipe.execute()
+
+
+async def update_incident(incident_id: str, **fields) -> Optional[Incident]:
+    """Patch any fields on an existing incident and return the updated model."""
+    r = await get_redis()
+    key = f"orqis:incident:{incident_id}"
+    raw = await r.get(key)
+    if not raw:
+        return None
+    data = json.loads(raw)
+    data.update(fields)
+    updated = Incident(**data)
+    await r.set(key, updated.model_dump_json(), keepttl=True)
+    return updated
+
+
+async def get_incident(incident_id: str) -> Optional[Incident]:
+    r = await get_redis()
+    raw = await r.get(f"orqis:incident:{incident_id}")
+    return Incident(**json.loads(raw)) if raw else None
+
+
+async def get_recent_incidents(limit: int = 50) -> list[Incident]:
+    r = await get_redis()
+    ids = await r.zrange("orqis:incidents:timeline", -limit, -1)
+    if not ids:
+        return []
+    pipe = r.pipeline()
+    for iid in ids:
+        pipe.get(f"orqis:incident:{iid}")
+    raws = await pipe.execute()
+    incidents = []
+    for raw in raws:
+        if raw:
+            try:
+                incidents.append(Incident(**json.loads(raw)))
+            except Exception:
+                pass
+    return incidents
 
 
 async def get_recent_events(limit: int = 100) -> list[LogEvent]:

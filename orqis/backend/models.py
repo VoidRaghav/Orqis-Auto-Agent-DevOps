@@ -60,5 +60,77 @@ class InterpretationUpdate(BaseModel):
 
 class WsMessage(BaseModel):
     """Envelope for all WebSocket messages sent to the dashboard."""
-    type: str  # "log.event" | "log.interpretation"
+    type: str  # "log.event" | "log.interpretation" | "trace.event"
     data: dict
+
+
+class EventKind(str, Enum):
+    LLM_START   = "llm.start"
+    LLM_END     = "llm.end"
+    LLM_ERROR   = "llm.error"
+    TOOL_START  = "tool.start"
+    TOOL_END    = "tool.end"
+    TOOL_ERROR  = "tool.error"
+    CHAIN_START = "chain.start"
+    CHAIN_END   = "chain.end"
+    CHAIN_ERROR = "chain.error"
+
+
+class TraceEvent(BaseModel):
+    """
+    Rich structured event emitted by the SDK instrumentation layer.
+    One TraceEvent per LLM call / tool call / chain step.
+    """
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: datetime
+    kind: EventKind
+    provider: str           # "openai" | "anthropic" | "langchain"
+    run_id: str             # groups start/end pairs and related events
+    model: Optional[str] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    cost_usd: Optional[float] = None
+    latency_ms: Optional[int] = None
+    is_error: bool = False
+    error_type: Optional[ErrorType] = None
+    error_message: Optional[str] = None
+    interpretation: Optional[str] = None  # filled async when is_error=True
+    source: str = "sdk"
+
+
+class IncidentStatus(str, Enum):
+    OPEN      = "open"       # detected, patch not yet generated
+    PATCHED   = "patched"    # diff ready, awaiting human approval
+    APPROVED  = "approved"   # human clicked approve, patch applied to disk
+    DISMISSED = "dismissed"  # human dismissed — no action taken
+
+
+class Incident(BaseModel):
+    """
+    A grouped error event with an optional generated patch.
+    Created whenever a log or trace error has a traceback with a resolvable file.
+    """
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    created_at: datetime
+    status: IncidentStatus = IncidentStatus.OPEN
+
+    # Source event that triggered this incident
+    source_event_id: str
+    error_type: Optional[ErrorType] = None
+    error_message: str
+    interpretation: Optional[str] = None
+
+    # Code location resolved from the traceback
+    file_path: Optional[str] = None
+    error_line: Optional[int] = None
+    function_name: Optional[str] = None
+    # The code context snippet shown alongside the diff
+    code_context: Optional[str] = None
+    context_start_line: Optional[int] = None
+
+    # Unified diff string produced by the patch generator
+    diff: Optional[str] = None
+
+    source: str = "unknown"
+    # How many times this exact error has fired (dedup counter)
+    hit_count: int = 1

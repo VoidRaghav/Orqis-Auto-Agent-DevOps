@@ -10,11 +10,15 @@ Processing flow per line:
   2. POST the LogEvent to the backend immediately (dashboard shows the line)
   3. If error: fire async LLM interpretation concurrently
   4. When interpretation resolves: PATCH backend with the plain-English text
-     (dashboard updates the existing card with the explanation)
+  5. Multi-line tracebacks are buffered; when the exception line arrives the
+     full traceback is POSTed to /rca/trigger so the RCA pipeline can locate
+     the failing code and generate a patch.
 """
 
 import asyncio
+import re
 import sys
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -23,6 +27,17 @@ import httpx
 from .. import config
 from ..backend.models import InterpretationUpdate, LogEvent, LogLevel
 from ..daemon import interpreter, pattern_matcher
+
+# Per-source traceback accumulator: source -> list of lines
+# Cleared when the terminal exception line arrives or on a non-traceback line.
+_tb_buffers: dict[str, list[str]] = defaultdict(list)
+
+# A line that starts a Python traceback
+_TB_START = re.compile(r"Traceback \(most recent call last\)", re.IGNORECASE)
+# A line that is a stack frame inside a traceback (indented with "File ")
+_TB_FRAME = re.compile(r'^\s+File "')
+# A line that ends the traceback — the exception class and message
+_TB_END = re.compile(r"^[A-Za-z][\w.]*Error[:\s]|^[A-Za-z][\w.]*Exception[:\s]")
 
 
 async def _post_event(client: httpx.AsyncClient, event: LogEvent) -> None:
@@ -96,6 +111,9 @@ async def process_line(
             _interpret_and_update(client, event.id, line, error_type)
         )
 
+    # Traceback buffering for RCA pipeline
+    _handle_traceback(client, line, event.source)
+
 
 def _print_event(event: LogEvent) -> None:
     """Print a classified log event to stdout with colour codes."""
@@ -112,6 +130,44 @@ def _print_event(event: LogEvent) -> None:
     tag = f"[{event.error_type.value}]" if event.error_type else ""
     ts = event.timestamp.strftime("%H:%M:%S")
     print(f"{colour}{ts}  {event.level.value:<8}  {tag:<16}  {event.raw_line}{reset}")
+
+
+def _handle_traceback(client: httpx.AsyncClient, line: str, source: str) -> None:
+    """
+    Buffer traceback lines per source. When the terminal exception line
+    arrives, flush the full traceback to the RCA pipeline trigger endpoint.
+    """
+    buf = _tb_buffers[source]
+
+    if _TB_START.search(line):
+        # Start of a new traceback — reset and begin buffering
+        _tb_buffers[source] = [line]
+        return
+
+    if buf:
+        buf.append(line)
+        if _TB_END.match(line.strip()):
+            # Full traceback collected — trigger RCA
+            full_tb = "\n".join(buf)
+            _tb_buffers[source] = []
+            asyncio.create_task(_post_rca_trigger(client, full_tb, source))
+        elif not _TB_FRAME.match(line) and "File " not in line:
+            # Line breaks the traceback sequence — discard buffer
+            _tb_buffers[source] = []
+
+
+async def _post_rca_trigger(
+    client: httpx.AsyncClient, traceback_text: str, source: str
+) -> None:
+    """POST a full traceback to the backend RCA trigger endpoint."""
+    try:
+        await client.post(
+            f"{config.BACKEND_URL}/rca/trigger",
+            json={"traceback": traceback_text, "source": source},
+            timeout=10.0,
+        )
+    except Exception:
+        pass  # Non-blocking — RCA is best-effort
 
 
 async def _interpret_and_update(client, event_id, line, error_type) -> None:
@@ -169,31 +225,35 @@ async def ingest_lines(
 
     Returns the list of LogEvent objects so the backend can immediately store
     and broadcast them without waiting for a second round-trip.
+
+    Each error line gets its own short-lived httpx client so background
+    interpretation tasks are not racing against a shared client being closed.
     """
     events: list[LogEvent] = []
-    async with httpx.AsyncClient() as client:
-        for line in lines:
-            line = line.rstrip("\n")
-            if not line:
-                continue
+    for line in lines:
+        line = line.rstrip("\n")
+        if not line:
+            continue
 
-            level, is_error, error_type, parsed_source, _ = pattern_matcher.classify(
-                line
-            )
-            event = LogEvent(
-                timestamp=datetime.now(timezone.utc),
-                raw_line=line,
-                level=level,
-                is_error=is_error,
-                error_type=error_type,
-                source=parsed_source or source,
-                interpretation=interpreter.fallback(error_type) if is_error else None,
-            )
-            events.append(event)
+        level, is_error, error_type, parsed_source, _ = pattern_matcher.classify(line)
+        event = LogEvent(
+            timestamp=datetime.now(timezone.utc),
+            raw_line=line,
+            level=level,
+            is_error=is_error,
+            error_type=error_type,
+            source=parsed_source or source,
+            interpretation=interpreter.fallback(error_type) if is_error else None,
+        )
+        events.append(event)
 
-            if is_error:
-                asyncio.create_task(
-                    _interpret_and_update(client, event.id, line, error_type)
-                )
+        if is_error:
+            asyncio.create_task(_interpret_and_update_standalone(event.id, line, error_type))
 
     return events
+
+
+async def _interpret_and_update_standalone(event_id: str, line: str, error_type) -> None:
+    """Interpretation task with its own client — safe to run after ingest returns."""
+    async with httpx.AsyncClient() as client:
+        await _interpret_and_update(client, event_id, line, error_type)

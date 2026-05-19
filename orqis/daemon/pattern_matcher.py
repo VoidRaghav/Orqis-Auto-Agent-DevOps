@@ -211,6 +211,12 @@ _ERROR_TYPE_PATTERNS: list[Tuple[re.Pattern, ErrorType]] = [
         re.compile(r"Traceback \(most recent call last\)", re.IGNORECASE),
         ErrorType.TRACEBACK,
     ),
+    # Catch-all: any line that IS the exception class (ZeroDivisionError:, KeyError: ...)
+    # This fires when the exception name has no specific pattern above.
+    (
+        re.compile(r"^[A-Za-z][\w.]*(?:Error|Exception|Warning)[\s:,]", re.MULTILINE),
+        ErrorType.TRACEBACK,
+    ),
 ]
 
 
@@ -243,17 +249,17 @@ def classify(
 
     is_error = level in (LogLevel.ERROR, LogLevel.CRITICAL)
 
-    # Also flag traceback lines even if they don't have an ERROR keyword
-    error_type = None
-    if is_error or level == LogLevel.WARNING:
-        error_type = _classify_error_type(line)
-        # Promote WARNING to ERROR if it carries a traceback or critical pattern
-        if not is_error and error_type in (
-            ErrorType.TRACEBACK,
-            ErrorType.RECURSION,
-            ErrorType.MEMORY,
-        ):
-            is_error = True
-            level = LogLevel.ERROR
+    # Always run error type classification — exception lines like `ZeroDivisionError:`
+    # have no ERROR keyword but must be promoted so they reach the RCA pipeline.
+    error_type = _classify_error_type(line)
+
+    if error_type is not None and not is_error:
+        # Promote to ERROR if the content looks like an error regardless of log level
+        is_error = True
+        level = LogLevel.ERROR
+
+    # Clear error_type for lines that are genuinely not errors
+    if not is_error:
+        error_type = None
 
     return level, is_error, error_type, source, message

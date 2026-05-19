@@ -27,3 +27,8 @@ LLM_MAX_TOKENS: int = 80
 
 # Max events to keep in Redis (rolling window)
 REDIS_EVENT_LIMIT: int = 1000
+
+# Drain endpoint auth token.
+# Set ORQIS_DRAIN_TOKEN to a long random string when deploying publicly.
+# If empty, the /drain endpoint is open (fine for local dev, not for production).
+DRAIN_TOKEN: str = os.getenv("ORQIS_DRAIN_TOKEN", "")
