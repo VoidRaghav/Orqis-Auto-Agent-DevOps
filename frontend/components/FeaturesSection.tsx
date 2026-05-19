@@ -9,20 +9,20 @@ gsap.registerPlugin(ScrollTrigger);
 const PANELS = [
   {
     num: "01",
-    title: "Narrative Logs",
-    desc: "Every agent run becomes a readable story. Know exactly what your agent was thinking, which tool failed, and why — in plain English, not raw JSON.",
+    title: "Instant RCA",
+    desc: "Errors hit your logs. Orqis reads the traceback, pinpoints the exact file and line, and sends a plain-English explanation to your dashboard in under a second. No digging.",
     accent: "#00ff88",
     code: [
-      { t: "INFO",  msg: "Agent started — searching for invoice #4421",  color: "#4d94ff" },
-      { t: "TOOL",  msg: "search_database → returned 0 results",          color: "#a0a0a0" },
-      { t: "TOOL",  msg: "search_google → Error: API key missing",        color: "#ff3333" },
-      { t: "COST",  msg: "Run failed · cost: $0.004 · duration: 1.2s",   color: "#ffaa00" },
+      { t: "ERROR",  msg: "RecursionError: pricing_agent.py:42",          color: "#ff3333" },
+      { t: "LOCATE", msg: "update_pricing() — depth 847, no base case",   color: "#ffaa00" },
+      { t: "PATCH",  msg: "diff ready — 4 lines changed",                 color: "#00ff88" },
+      { t: "MCP",    msg: "patch sent to Claude Code — awaiting approval", color: "#4d94ff" },
     ],
   },
   {
     num: "02",
     title: "Live Config",
-    desc: "Swap models, edit prompts, inject secrets — instantly. No redeploy. No downtime. Changes take effect on the very next request.",
+    desc: "Change models, swap prompts, inject secrets at runtime. No redeploy. No downtime. The next request picks up the change immediately.",
     accent: "#4d94ff",
     config: [
       { key: "model",       val: "gpt-4o → claude-sonnet-4-5", changed: true  },
@@ -34,20 +34,20 @@ const PANELS = [
   {
     num: "03",
     title: "Cost Guardrail",
-    desc: "Real-time burn tracking per agent per run. Set budgets. Auto-kill runaway loops before they drain your OpenAI balance.",
+    desc: "Every token counted. Every run tracked. Set a budget per agent — Orqis kills runaway loops before they drain your API balance. Real-time burn rate on your dashboard.",
     accent: "#ffaa00",
     cost: { current: 2.31, limit: 2.5, rate: "$0.55/s" },
   },
   {
     num: "04",
-    title: "Self-Heal Loop",
-    desc: "Crash → diagnose → patch → resume. Orqis packages the exact context, fires it to your IDE, and the agent fixes itself. 14 seconds, not 14 minutes.",
+    title: "Auto-Patch",
+    desc: "Crash detected. Root cause found. Unified diff generated. Orqis pushes the patch to Claude Code or Cursor via MCP — you review and approve. Done in 14 seconds.",
     accent: "#ff3333",
     diff: [
       { type: "rem", code: "async def update_pricing(self, id):" },
-      { type: "rem", code: "    return await self.update_pricing(id)  # no base case" },
+      { type: "rem", code: "    return await self.update_pricing(id)" },
       { type: "add", code: "async def update_pricing(self, id, depth=0):" },
-      { type: "add", code: "    if depth > 10: raise RecursionLimitError()" },
+      { type: "add", code: "    if depth > 10: raise RecursionLimitError(id)" },
       { type: "add", code: "    price = await fetch_market_price(id)" },
       { type: "add", code: "    return {\"price\": price, \"depth\": depth}" },
     ],
@@ -91,7 +91,7 @@ export default function FeaturesSection() {
           fontFamily: "'DM Mono', monospace", fontSize: 11,
           letterSpacing: "0.2em", color: "#444444", textTransform: "uppercase",
         }}>
-          ◆ Core Features
+          ◆ How It Works
         </span>
         <h2 style={{
           fontFamily: "'Anton', sans-serif",
@@ -99,8 +99,8 @@ export default function FeaturesSection() {
           color: "#ffffff", lineHeight: 0.95, marginTop: 20,
           letterSpacing: "-0.01em",
         }}>
-          EVERYTHING YOU NEED.<br />
-          <span style={{ color: "#00ff88" }}>NOTHING YOU DON'T.</span>
+          DETECT. EXPLAIN.<br />
+          <span style={{ color: "#00ff88" }}>PATCH. DONE.</span>
         </h2>
       </div>
 

@@ -74,23 +74,28 @@ export default function FooterCTA() {
         >
           <h2 style={{
             fontFamily: "'Anton', sans-serif",
-            fontSize: "clamp(4rem, 12vw, 10rem)",
+            fontSize: "clamp(3.5rem, 10vw, 9rem)",
             lineHeight: 0.9,
             letterSpacing: "-0.01em",
             color: "#ffffff",
             marginBottom: 24,
           }}>
-            STOP<br />
-            <span style={{ color: "#00ff88" }}>GUESSING.</span>
+            NEXT PROD
+            <br />
+            INCIDENT?
+            <br />
+            <span style={{ color: "#00ff88" }}>ALREADY FIXED.</span>
           </h2>
 
           <p style={{
             fontFamily: "'Inter', sans-serif",
-            fontSize: "clamp(1rem, 1.5vw, 1.2rem)",
+            fontSize: "clamp(1rem, 1.5vw, 1.15rem)",
             color: "#666666",
             marginBottom: 40,
+            maxWidth: 520,
+            margin: "0 auto 40px",
           }}>
-            Start understanding your agents.
+            Orqis watches your logs, finds the root cause, and patches the code — before you even open a ticket.
           </p>
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "center", marginBottom: 48 }}>
@@ -110,7 +115,7 @@ export default function FooterCTA() {
 
           {/* Social proof */}
           <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 28, opacity: 0.45 }}>
-            {["Zero config setup", "Deploy in 5 minutes", "No credit card required"].map((item, i) => (
+            {["Zero config — pipe logs and go", "MCP-native for Claude Code & Cursor", "No credit card required"].map((item, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ color: "#00ff88", fontSize: 13 }}>✓</span>
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#666666" }}>{item}</span>
@@ -140,8 +145,8 @@ export default function FooterCTA() {
                 fontFamily: "'Inter', sans-serif", fontSize: 13,
                 color: "#555555", lineHeight: 1.7, maxWidth: 260,
               }}>
-                Mission Control for vibe-built agents. Zero config DevOps and
-                observability for AI.
+                Self-healing production for AI agents and DevOps pipelines.
+                Detect, diagnose, patch — automatically.
               </p>
               <div style={{ display: "flex", gap: 16, marginTop: 20 }}>
                 {["𝕏", "GitHub", "Discord"].map((social) => (
