@@ -9,7 +9,9 @@ The timeline is capped at config.REDIS_EVENT_LIMIT entries to prevent
 unbounded growth in long-running daemon sessions.
 """
 
+import asyncio
 import json
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -19,6 +21,11 @@ from .. import config
 from ..backend.models import Incident, IncidentStatus, LogEvent, TraceEvent
 
 _redis: Optional[aioredis.Redis] = None
+
+# Per-incident locks serialise the read-modify-write in update_incident so
+# the async interpretation task can't clobber fields written by the locate
+# and patch steps (or vice-versa).
+_incident_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 async def get_redis() -> aioredis.Redis:
@@ -112,23 +119,53 @@ async def save_incident(incident: Incident) -> None:
 
 
 async def update_incident(incident_id: str, **fields) -> Optional[Incident]:
-    """Patch any fields on an existing incident and return the updated model."""
-    r = await get_redis()
-    key = f"orqis:incident:{incident_id}"
-    raw = await r.get(key)
-    if not raw:
-        return None
-    data = json.loads(raw)
-    data.update(fields)
-    updated = Incident(**data)
-    await r.set(key, updated.model_dump_json(), keepttl=True)
-    return updated
+    """
+    Patch any fields on an existing incident and return the updated model.
+
+    The read-modify-write is held under a per-incident lock so concurrent
+    updates (e.g. the async interpretation task vs. the locate/patch steps)
+    cannot overwrite each other's fields.
+    """
+    async with _incident_locks[incident_id]:
+        r = await get_redis()
+        key = f"orqis:incident:{incident_id}"
+        raw = await r.get(key)
+        if not raw:
+            return None
+        data = json.loads(raw)
+        data.update(fields)
+        updated = Incident(**data)
+        await r.set(key, updated.model_dump_json(), keepttl=True)
+        return updated
 
 
 async def get_incident(incident_id: str) -> Optional[Incident]:
     r = await get_redis()
     raw = await r.get(f"orqis:incident:{incident_id}")
     return Incident(**json.loads(raw)) if raw else None
+
+
+async def clear_all() -> dict:
+    """
+    Delete every stored incident, log event, and trace event. Used by the demo
+    reset so the dashboard (incidents, ACTIVITY log stream, AI CALLS / cost)
+    starts completely clean. Returns a count per kind.
+    """
+    r = await get_redis()
+    counts: dict[str, int] = {}
+    for kind, prefix, timeline in (
+        ("incidents", "orqis:incident:", "orqis:incidents:timeline"),
+        ("events", "orqis:event:", "orqis:events:timeline"),
+        ("traces", "orqis:trace:", "orqis:traces:timeline"),
+    ):
+        ids = await r.zrange(timeline, 0, -1)
+        pipe = r.pipeline()
+        for i in ids:
+            pipe.delete(f"{prefix}{i}")
+        pipe.delete(timeline)
+        await pipe.execute()
+        counts[kind] = len(ids)
+    return counts
 
 
 async def get_recent_incidents(limit: int = 50) -> list[Incident]:

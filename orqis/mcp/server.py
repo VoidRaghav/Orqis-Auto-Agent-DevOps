@@ -90,13 +90,19 @@ _TOOLS = [
         "name": "approve_incident",
         "description": (
             "Apply the Orqis-generated patch to disk and mark the incident as approved. "
-            "Only works when status is 'patched'. Always review the diff with "
-            "get_incident first."
+            "Works directly when status is 'patched'. For 'low_confidence' incidents "
+            "(patch failed verification) you must pass force=true after reviewing the "
+            "diff and validation errors via get_incident. Always review first."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "incident_id": {"type": "string"}
+                "incident_id": {"type": "string"},
+                "force": {
+                    "type": "boolean",
+                    "description": "Override the low-confidence block (default false)",
+                    "default": False,
+                },
             },
             "required": ["incident_id"],
         },
@@ -134,7 +140,9 @@ def _handle_list_incidents(backend: str, args: dict) -> str:
         line = inc.get("error_line") or ""
         loc = f" @ {fp}:{line}" if fp else ""
         diff_flag = " [has diff]" if inc.get("diff") else ""
-        lines.append(f"[{status}]{diff_flag} id={inc['id']}{loc}\n  {err}")
+        conf = inc.get("confidence")
+        conf_flag = f" confidence={conf}/100" if conf is not None else ""
+        lines.append(f"[{status}]{diff_flag}{conf_flag} id={inc['id']}{loc}\n  {err}")
     return "\n\n".join(lines)
 
 
@@ -157,8 +165,22 @@ def _handle_get_incident(backend: str, args: dict) -> str:
         parts.append(f"function: {inc['function_name']}")
     if inc.get("code_context"):
         parts.append(f"\ncode context (line {inc.get('context_start_line', 1)}):\n```python\n{inc['code_context']}\n```")
+    # Verification results — so the assistant can judge before approving
+    conf = inc.get("confidence")
+    if conf is not None:
+        parts.append(f"confidence: {conf}/100 ({inc.get('validation_status', 'pending')})")
+    for err in inc.get("validation_errors") or []:
+        parts.append(f"  ✗ {err}")
+    for warn in inc.get("validation_warnings") or []:
+        parts.append(f"  ⚠ {warn}")
+
     if inc.get("diff"):
         parts.append(f"\nsuggested diff:\n```diff\n{inc['diff']}\n```")
+        if inc.get("status") == "low_confidence":
+            parts.append(
+                "\nNOTE: this patch failed verification — review carefully. "
+                "Approving requires ?force=true."
+            )
     else:
         parts.append("\nno diff available yet")
     return "\n".join(parts)
@@ -175,7 +197,12 @@ def _handle_get_incident_prompt(backend: str, args: dict) -> str:
 
 def _handle_approve_incident(backend: str, args: dict) -> str:
     iid = args["incident_id"]
-    r = httpx.post(f"{backend}/incidents/{iid}/approve", timeout=15.0)
+    force = bool(args.get("force", False))
+    r = httpx.post(
+        f"{backend}/incidents/{iid}/approve",
+        params={"force": str(force).lower()},
+        timeout=15.0,
+    )
     if r.status_code == 404:
         return f"Incident {iid} not found."
     if r.status_code == 409:

@@ -1,39 +1,69 @@
 """
 LLM-powered patch generator.
 
-Takes an error + its code context (from file_reader.py) and produces a
-unified diff string that can be applied with `patch` or shown in a diff panel.
+Takes an error + its code context (from file_reader.py) and produces a unified
+diff string that the verification gates can check and the dashboard can show.
+
+Why we don't ask the model for a diff:
+  Small local models write correct Python but cannot reliably hand-author
+  unified-diff syntax — they miscount @@ line numbers, drop indentation, and
+  emit stray markers, so the patch fails the hallucination gate even when the
+  fix is right. Instead we ask for the corrected code block and compute the
+  diff ourselves with difflib against the real file. The removed lines are then
+  taken verbatim from the source, so a patch can never hallucinate a deletion;
+  the only ways to fail are bad Python or unsafe imports, which the gates catch.
 
 Flow:
-  1. Build a focused prompt: error message + minimal code context only.
+  1. Build a focused prompt: error + the exact code block to repair.
   2. Call Ollama (free) or Anthropic (paid) — same config as interpreter.py.
-  3. Parse the LLM output: extract the diff block, validate it is a legal
-     unified diff before storing. Reject and return None if invalid.
+  3. Splice the returned block back into the file and difflib the result.
   4. Never write to disk — the caller stores the diff and waits for approval.
 
-Cost: ~300-600 input tokens + ~200 output tokens per patch call.
+Cost: ~300-600 input tokens + ~250 output tokens per patch call.
   Ollama: $0
-  Haiku:  ~$0.003 per patch (only fires on real errors with tracebacks)
+  Haiku:  ~$0.003 per patch
 """
 
+import difflib
 import re
 from typing import Optional
 
 import httpx
 
 from .. import config
+from ..daemon.interpreter import _warn_llm
 from ..rca.file_reader import CodeLocation
 
 _SYSTEM_PROMPT = """\
 You are Orqis, a production incident auto-patcher.
 
-Given an error and the source code where it occurred, produce the minimal \
-unified diff that fixes the root cause. Rules:
-- Output ONLY the unified diff — no explanation, no markdown fences, nothing else.
-- Use standard unified diff format: --- a/file, +++ b/file, @@ ... @@
-- Make the smallest possible change that fixes the bug.
-- Do not reformat, rename, or refactor unrelated code.
-- If the fix requires an import, add it.
+You are given an error and the exact block of source code where it occurred. \
+Return the COMPLETE corrected version of that same block. Rules:
+- Output ONLY the corrected code — no explanation, no markdown fences, no diff.
+- Return the entire block you were given, start to end, changing only what is \
+needed to fix the root cause.
+- Preserve every other line exactly, including indentation and blank lines.
+- Do not rename or refactor unrelated code.
+- If the fix needs an import, add it inside the block if that is valid, \
+otherwise leave it out.
+- If you cannot produce a safe fix, output exactly: NO_FIX
+"""
+
+# Loop fixes are structural, not syntactic — the code parses and runs fine, it
+# just never stops. Steer the model toward a bounded-retry guard instead of
+# hunting for a typo that isn't there.
+_LOOP_SYSTEM_PROMPT = """\
+You are Orqis, a production incident auto-patcher.
+
+The code block below runs without error but loops forever: it calls a tool \
+repeatedly with no exit condition, burning money. Return the COMPLETE corrected \
+version of that same block with a bounded-retry guard added. Rules:
+- Output ONLY the corrected code — no explanation, no markdown fences, no diff.
+- Return the entire block you were given, start to end.
+- Add a maximum attempt count; when it is reached, stop looping and return a \
+safe fallback value (escalate to a human / give up gracefully). Do NOT raise.
+- Keep the normal-case behaviour unchanged — only add the cap.
+- Preserve every other line exactly, including indentation and blank lines.
 - If you cannot produce a safe fix, output exactly: NO_FIX
 """
 
@@ -41,23 +71,27 @@ unified diff that fixes the root cause. Rules:
 async def generate(
     error_message: str,
     location: CodeLocation,
+    kind: str = "error",
 ) -> Optional[str]:
     """
     Generate a unified diff for the given error and code location.
-    Returns the diff string, or None if no safe fix could be produced.
-    Never raises — any failure returns None.
+
+    kind="error" fixes a raised exception; kind="loop" adds a bounded-retry
+    guard to a no-exit-condition agent loop. Returns the diff string, or None
+    if no safe fix could be produced. Never raises — any failure returns None.
     """
     prompt = _build_prompt(error_message, location)
+    system = _LOOP_SYSTEM_PROMPT if kind == "loop" else _SYSTEM_PROMPT
 
     if config.LLM_PROVIDER == "anthropic":
-        raw = await _call_anthropic(prompt)
+        raw = await _call_anthropic(prompt, system)
     else:
-        raw = await _call_ollama(prompt)
+        raw = await _call_ollama(prompt, system)
 
     if raw is None:
         return None
 
-    return _extract_and_validate_diff(raw, location.file_path)
+    return _diff_from_rewrite(raw, location)
 
 
 def _build_prompt(error_message: str, location: CodeLocation) -> str:
@@ -66,86 +100,100 @@ def _build_prompt(error_message: str, location: CodeLocation) -> str:
         f"Error:\n{error_message}\n\n"
         f"File: {location.file_path}\n"
         f"Error at line: {location.line}\n"
-        f"Context ({func_label}, starting at line {location.context_start_line}):\n"
+        f"Code block to repair ({func_label}, lines "
+        f"{location.context_start_line}-{location.context_start_line + len(location.context.splitlines()) - 1}):\n"
         f"```python\n{location.context}\n```\n\n"
-        f"Generate the unified diff to fix this error."
+        f"Return the complete corrected code block."
     )
 
 
-async def _call_ollama(prompt: str) -> Optional[str]:
+async def _call_ollama(prompt: str, system: str) -> Optional[str]:
     payload = {
         "model": config.OLLAMA_MODEL,
         "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ],
         "stream": False,
-        # Patches are short — cap tokens to avoid runaway generation
-        "options": {"num_predict": 400},
+        # A corrected function is longer than a diff — give it room but still cap.
+        "options": {"num_predict": 600},
     }
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(f"{config.OLLAMA_URL}/api/chat", json=payload)
             resp.raise_for_status()
             return resp.json()["message"]["content"].strip()
-    except httpx.ConnectError:
-        return None  # Ollama not running
-    except Exception:
+    except httpx.ConnectError as e:
+        _warn_llm(f"Ollama ({config.OLLAMA_URL})", e)
+        return None
+    except Exception as e:
+        _warn_llm("Ollama", e)
         return None
 
 
-async def _call_anthropic(prompt: str) -> Optional[str]:
+async def _call_anthropic(prompt: str, system: str) -> Optional[str]:
     try:
         import anthropic
         client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
         response = await client.messages.create(
             model=config.ANTHROPIC_MODEL,
-            max_tokens=400,
-            system=_SYSTEM_PROMPT,
+            max_tokens=600,
+            system=system,
             messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text.strip()
-    except Exception:
+    except Exception as e:
+        _warn_llm("Anthropic", e)
         return None
 
 
-# Unified diff header pattern — must be present for a valid diff
-_DIFF_HEADER = re.compile(r"^---\s+\S+.*\n\+\+\+\s+\S+", re.MULTILINE)
-_HUNK_HEADER = re.compile(r"^@@\s+-\d+", re.MULTILINE)
-
-# Strip markdown code fences if the LLM wrapped the diff in them
-_CODE_FENCE = re.compile(r"```(?:diff|patch)?\n(.*?)```", re.DOTALL)
+# Strip a markdown code fence if the model wrapped its answer in one.
+_CODE_FENCE = re.compile(r"```(?:python|py)?\n(.*?)```", re.DOTALL)
 
 
-def _extract_and_validate_diff(raw: str, file_path: str) -> Optional[str]:
+def _diff_from_rewrite(raw: str, location: CodeLocation) -> Optional[str]:
     """
-    Extract a unified diff from the LLM output and validate it.
-    Returns None if the output is not a valid diff or is NO_FIX.
+    Splice the model's corrected block back into the real file and compute a
+    unified diff with difflib. Because the removed lines come straight from the
+    source, the resulting diff is guaranteed to apply — the gates then judge the
+    Python itself, not the diff formatting.
     """
-    if raw.strip() == "NO_FIX" or not raw.strip():
+    fence = _CODE_FENCE.search(raw)
+    code = (fence.group(1) if fence else raw).strip("\n")
+
+    if not code.strip() or code.strip() == "NO_FIX":
         return None
 
-    # Strip markdown fences if present
-    fence_match = _CODE_FENCE.search(raw)
-    diff = fence_match.group(1).strip() if fence_match else raw.strip()
-
-    # Must have both a header and at least one hunk
-    if not _DIFF_HEADER.search(diff):
-        # LLM may have skipped the --- +++ header — inject it and retry validation
-        diff = f"--- a/{file_path}\n+++ b/{file_path}\n{diff}"
-
-    if not _HUNK_HEADER.search(diff):
-        # No hunk headers — not a valid diff
+    try:
+        with open(location.file_path, "r", encoding="utf-8") as f:
+            original = f.read()
+    except OSError:
         return None
 
-    # Every line must start with ' ', '+', '-', '@', or '\' (no-newline marker)
-    for line in diff.splitlines():
-        if line and line[0] not in (" ", "+", "-", "@", "\\", "#"):
-            # LLM added prose — strip it and continue
-            diff = "\n".join(
-                l for l in diff.splitlines()
-                if not l or l[0] in (" ", "+", "-", "@", "\\", "#")
-            )
-            break
+    orig_lines = original.splitlines()
+    start = location.context_start_line - 1          # 0-indexed slice start
+    end = start + len(location.context.splitlines())  # exclusive slice end
+    if start < 0 or end > len(orig_lines):
+        return None
 
-    return diff if diff.strip() else None
+    new_region = code.splitlines()
+    if not new_region:
+        return None
+
+    patched_lines = orig_lines[:start] + new_region + orig_lines[end:]
+    if patched_lines == orig_lines:
+        return None  # model returned the block unchanged
+
+    diff_lines = list(
+        difflib.unified_diff(
+            orig_lines,
+            patched_lines,
+            fromfile=f"a/{location.file_path}",
+            tofile=f"b/{location.file_path}",
+            lineterm="",
+        )
+    )
+    if not diff_lines:
+        return None
+
+    return "\n".join(diff_lines) + "\n"

@@ -10,6 +10,7 @@ errors from loops printing the same line hundreds of times.
 """
 
 import hashlib
+import sys
 from typing import Optional
 
 import httpx
@@ -19,6 +20,22 @@ from ..backend.models import ErrorType
 
 # In-memory cache: md5(raw_line) -> interpretation string
 _cache: dict[str, str] = {}
+
+# Log the first LLM failure loudly, then stay quiet — silent fallbacks
+# hide real problems (expired key, no credits, Ollama down).
+_llm_warned = False
+
+
+def _warn_llm(provider: str, exc: Exception) -> None:
+    global _llm_warned
+    if _llm_warned:
+        return
+    _llm_warned = True
+    print(
+        f"\033[33m[orqis] {provider} LLM unavailable — interpretations and "
+        f"patches will fall back to static text. {type(exc).__name__}: {exc}\033[0m",
+        file=sys.stderr,
+    )
 
 _SYSTEM_PROMPT = (
     "You are an error interpreter for Orqis, a production monitoring tool. "
@@ -76,10 +93,11 @@ async def _call_ollama(raw_line: str, error_type: Optional[ErrorType]) -> str:
             resp.raise_for_status()
             data = resp.json()
             return data["message"]["content"].strip()
-    except httpx.ConnectError:
-        # Ollama not running — fall back silently
+    except httpx.ConnectError as e:
+        _warn_llm(f"Ollama ({config.OLLAMA_URL})", e)
         return _fallback(error_type)
-    except Exception:
+    except Exception as e:
+        _warn_llm("Ollama", e)
         return _fallback(error_type)
 
 
@@ -99,7 +117,8 @@ async def _call_anthropic(raw_line: str, error_type: Optional[ErrorType]) -> str
             messages=[{"role": "user", "content": user_content}],
         )
         return response.content[0].text.strip()
-    except Exception:
+    except Exception as e:
+        _warn_llm("Anthropic", e)
         return _fallback(error_type)
 
 
@@ -113,6 +132,7 @@ _FALLBACKS: dict[ErrorType, str] = {
     ErrorType.HTTP_ERROR: "A downstream server returned a 4xx or 5xx error response.",
     ErrorType.RATE_LIMIT: "The LLM API rejected the request because the rate limit or quota was exceeded.",
     ErrorType.TOOL_FAILURE: "An agent tool call failed to execute and returned an error.",
+    ErrorType.RUNAWAY_LOOP: "The agent kept calling the same tool with no exit condition, burning tokens and money without making progress.",
     ErrorType.TYPE_ERROR: "A function received an argument of the wrong type.",
     ErrorType.VALUE_ERROR: "A function received an argument with an unacceptable value.",
     ErrorType.ATTRIBUTE_ERROR: "Code attempted to access a property that does not exist on the object.",

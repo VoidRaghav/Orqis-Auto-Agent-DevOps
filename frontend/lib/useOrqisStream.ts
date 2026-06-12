@@ -19,7 +19,8 @@ type Action =
   | { type: "log_interp"; event_id: string; text: string }
   | { type: "trace_event"; event: TraceEvent }
   | { type: "trace_interp"; event_id: string; text: string }
-  | { type: "incident_upsert"; incident: Incident };
+  | { type: "incident_upsert"; incident: Incident }
+  | { type: "store_cleared" };
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -53,6 +54,8 @@ function reducer(state: State, action: Action): State {
         : [action.incident, ...state.incidents];
       return { ...state, incidents };
     }
+    case "store_cleared":
+      return { ...state, incidents: [], events: [], traces: [] };
   }
 }
 
@@ -101,6 +104,9 @@ export function useOrqisStream(wsUrl: string, apiUrl: string) {
           case "incident.interpretation":
             dispatch({ type: "incident_upsert", incident: payload.data });
             break;
+          case "store.cleared":
+            dispatch({ type: "store_cleared" });
+            break;
         }
       } catch {}
     };
@@ -124,8 +130,9 @@ export function useOrqisStream(wsUrl: string, apiUrl: string) {
     };
   }, [connect]);
 
-  const approveIncident = useCallback(async (id: string) => {
-    const r = await fetch(`${apiUrl}/incidents/${id}/approve`, { method: "POST" });
+  const approveIncident = useCallback(async (id: string, force = false) => {
+    const url = `${apiUrl}/incidents/${id}/approve${force ? "?force=true" : ""}`;
+    const r = await fetch(url, { method: "POST" });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   }, [apiUrl]);

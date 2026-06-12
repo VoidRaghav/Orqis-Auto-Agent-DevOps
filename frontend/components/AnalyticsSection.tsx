@@ -96,15 +96,15 @@ export default function AnalyticsSection() {
             fontSize: "clamp(2.5rem, 5vw, 4.5rem)",
             color: "#ffffff", lineHeight: 1, marginTop: 16, letterSpacing: "-0.01em",
           }}>
-            OBSERVE EVERYTHING.<br />
-            <span style={{ color: "#00ff88" }}>LIKE LANGSMITH.</span>
+            OBSERVABILITY<br />
+            <span style={{ color: "#00ff88" }}>THAT FIXES ITSELF.</span>
           </h2>
           <p style={{
             fontFamily: "'Inter', sans-serif", fontSize: 16, color: "#666",
-            marginTop: 16, maxWidth: 480, margin: "16px auto 0",
+            marginTop: 16, maxWidth: 520, margin: "16px auto 0",
           }}>
-            Token budgets, latency, error rates, cost attribution — all in one place.
-            No setup. No SDKs. Just install and go.
+            Others show you the error. Orqis explains it, writes the patch, and pushes it
+            to your IDE — token budgets, latency, error rates, cost attribution included.
           </p>
         </div>
 

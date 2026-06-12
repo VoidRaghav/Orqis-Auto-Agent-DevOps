@@ -32,3 +32,20 @@ REDIS_EVENT_LIMIT: int = 1000
 # Set ORQIS_DRAIN_TOKEN to a long random string when deploying publicly.
 # If empty, the /drain endpoint is open (fine for local dev, not for production).
 DRAIN_TOKEN: str = os.getenv("ORQIS_DRAIN_TOKEN", "")
+
+# Project root the RCA pipeline uses to locate source files from tracebacks.
+# Captured once at startup so backend cwd changes can't break it.
+PROJECT_ROOT: str = os.getenv("ORQIS_PROJECT_ROOT", os.getcwd())
+
+# Allowed CORS origins for the dashboard (comma-separated). The browser blocks
+# cross-origin REST calls without these headers. Defaults cover local dev; add
+# your Vercel URL for production, or set "*" to allow any origin.
+CORS_ORIGINS: str = os.getenv(
+    "ORQIS_CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000",
+)
+
+# Sentry integration — shared secret used to verify webhook signatures.
+# Found in Sentry: Settings -> Developer Settings -> your integration -> Client Secret.
+# If empty, signature verification is skipped (fine for local dev, not production).
+SENTRY_WEBHOOK_SECRET: str = os.getenv("ORQIS_SENTRY_SECRET", "")

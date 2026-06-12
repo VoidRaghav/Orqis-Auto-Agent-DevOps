@@ -35,19 +35,11 @@ export default function Nav() {
         transition: "background-color 0.3s ease, border-color 0.3s ease, backdrop-filter 0.3s ease",
       }}
     >
-      {/* Logo */}
-      <a href="#" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
-        <div style={{
-          width: 28, height: 28, borderRadius: 7,
-          background: "linear-gradient(135deg, #ffffff 0%, #a0a0a0 100%)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 13, fontWeight: 700, color: "#000",
-        }}>
-          ⌬
-        </div>
+      {/* Wordmark */}
+      <a href="#" style={{ display: "flex", alignItems: "center", textDecoration: "none" }}>
         <span style={{
-          fontFamily: "'Anton', sans-serif", fontSize: 18,
-          color: "#ffffff", letterSpacing: "0.02em",
+          fontFamily: "'Anton', sans-serif", fontSize: 20,
+          color: "#ffffff", letterSpacing: "0.04em",
         }}>
           ORQIS
         </span>

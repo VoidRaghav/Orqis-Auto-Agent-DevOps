@@ -21,9 +21,11 @@ Railway setup:
   Settings -> Log Drains -> Add Drain -> HTTP -> https://your-backend/drain?source=my-app
 """
 
+import json
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 
 from .. import config
 from ..backend import store, ws_manager
@@ -59,6 +61,19 @@ def _check_drain_auth(request: Request) -> None:
 
 
 app = FastAPI(title="Orqis", lifespan=lifespan)
+
+# The dashboard runs on a different origin (localhost:3000 in dev, Vercel in
+# prod) and hydrates over REST, so the browser needs CORS headers. Origins are
+# configurable; defaults cover local dev. Set ORQIS_CORS_ORIGINS (comma list)
+# or "*" to widen.
+_cors_origins = [o.strip() for o in config.CORS_ORIGINS.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins or ["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # --- HTTP endpoints -----------------------------------------------------------
@@ -167,8 +182,19 @@ async def receive_trace(event: TraceEvent):
     Stores it, broadcasts to dashboard, and fires async LLM interpretation
     for error events.
     """
+    import asyncio
+
+    from ..rca import anomaly
+
     await store.save_trace_event(event)
     await ws_manager.manager.broadcast("trace.event", event.model_dump(mode="json"))
+
+    # Behavioural detection: watch the live stream for a runaway tool loop.
+    # This fires no exception — it is only visible here, in the stream itself.
+    signal = await anomaly.observe(event)
+    if signal is not None:
+        from ..rca.pipeline import trigger_anomaly
+        asyncio.create_task(trigger_anomaly(signal))
 
     if event.is_error and event.error_message:
         from ..daemon.interpreter import fallback
@@ -182,7 +208,6 @@ async def receive_trace(event: TraceEvent):
         )
 
         # Fire async LLM interpretation
-        import asyncio
         asyncio.create_task(_interpret_trace(event.id, event.error_message, event.error_type))
 
         # Trigger RCA pipeline if the error message contains a traceback
@@ -195,7 +220,9 @@ async def receive_trace(event: TraceEvent):
                 source=event.source,
             ))
 
-    return {"id": event.id}
+    # circuit_break tells the calling agent to stop: Orqis has confirmed a
+    # runaway loop on this source. This is the closed-loop kill switch.
+    return {"id": event.id, "circuit_break": anomaly.is_tripped(event.source)}
 
 
 async def _interpret_trace(event_id: str, error_message: str, error_type) -> None:
@@ -245,6 +272,76 @@ async def rca_trigger(body: dict):
     return {"ok": True}
 
 
+@app.post("/integrations/sentry/webhook", status_code=202)
+async def sentry_webhook(request: Request):
+    """
+    Receive a Sentry error webhook, reconstruct the traceback from its
+    structured stack frames, and run the same RCA pipeline used for raw logs.
+
+    Configure in Sentry: Settings -> Developer Settings -> New Internal
+    Integration -> Webhook URL = https://your-backend/integrations/sentry/webhook
+    Set ORQIS_SENTRY_SECRET to the integration's Client Secret to enforce
+    signature verification.
+    """
+    import asyncio
+
+    from ..integrations import sentry
+    from ..rca.pipeline import trigger
+
+    raw = await request.body()
+    signature = request.headers.get("sentry-hook-signature")
+    if not sentry.verify_signature(raw, signature, config.SENTRY_WEBHOOK_SECRET):
+        raise HTTPException(status_code=401, detail="invalid sentry signature")
+
+    try:
+        payload = json.loads(raw or b"{}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="invalid json payload")
+
+    result = sentry.extract_traceback(payload)
+    if result is None:
+        return {"ok": False, "reason": "no actionable stacktrace in payload"}
+
+    traceback_text, source = result
+
+    from ..daemon.pattern_matcher import classify
+    last_line = [l for l in traceback_text.splitlines() if l.strip()][-1]
+    _, _, error_type, _, _ = classify(last_line)
+
+    asyncio.create_task(trigger(
+        source_event_id="sentry",
+        error_message=traceback_text,
+        error_type=error_type,
+        source=source,
+    ))
+    return {"ok": True}
+
+
+@app.post("/demo/reset")
+async def demo_reset(clear: bool = False):
+    """
+    Reset the runaway-loop demo so it can be run again.
+
+    Clears the anomaly detector's in-memory state so the circuit breaker
+    re-trips on the next run. The incident dedup table is intentionally NOT
+    cleared: that lets repeated runs of the same loop collapse into one
+    incident (bumping its hit count) instead of spawning a duplicate each time.
+
+    Pass ?clear=true to also delete all stored incidents and tell the dashboard
+    to empty its list — used once to wipe accumulated demo runs.
+    """
+    from ..rca import anomaly
+
+    anomaly.reset()
+
+    if clear:
+        counts = await store.clear_all()
+        await ws_manager.manager.broadcast("store.cleared", {})
+        return {"ok": True, "cleared": counts}
+
+    return {"ok": True}
+
+
 # --- Incidents ----------------------------------------------------------------
 
 @app.get("/incidents", response_model=list[Incident])
@@ -262,11 +359,13 @@ async def get_incident(incident_id: str):
 
 
 @app.post("/incidents/{incident_id}/approve")
-async def approve_incident(incident_id: str):
+async def approve_incident(incident_id: str, force: bool = False):
     """
     Apply the generated patch to disk and mark the incident as approved.
     This is the only endpoint that writes to the filesystem.
-    Requires the incident to be in PATCHED status with a valid diff.
+
+    Normally requires PATCHED status. LOW_CONFIDENCE incidents are blocked
+    unless ?force=true is set — a human is signing off on a risky patch.
     """
     import os
     from ..rca.applier import apply
@@ -274,10 +373,17 @@ async def approve_incident(incident_id: str):
     incident = await store.get_incident(incident_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="incident not found")
-    if incident.status != IncidentStatus.PATCHED:
+
+    allowed = (IncidentStatus.PATCHED,)
+    if force:
+        allowed = (IncidentStatus.PATCHED, IncidentStatus.LOW_CONFIDENCE)
+    if incident.status not in allowed:
         raise HTTPException(
             status_code=409,
-            detail=f"incident is {incident.status.value}, not patched — cannot approve",
+            detail=(
+                f"incident is {incident.status.value}, not patched "
+                f"— pass ?force=true to override low-confidence block"
+            ),
         )
     if not incident.diff:
         raise HTTPException(status_code=409, detail="no diff available to apply")

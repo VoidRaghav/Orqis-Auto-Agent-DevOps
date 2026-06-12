@@ -51,7 +51,7 @@ export default function PricingSection() {
             <span style={{ color: "#00ff88" }}>HONEST.</span>
           </h2>
           <p style={{ ...inter, fontSize: 16, color: "#666", marginTop: 16 }}>
-            The Spotify model — people pay for convenience. Setup friction is the product.
+            Pay for the time you save, not the seats you fill.
           </p>
 
           {/* Toggle */}

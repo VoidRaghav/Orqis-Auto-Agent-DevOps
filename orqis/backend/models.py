@@ -30,6 +30,9 @@ class ErrorType(str, Enum):
     TOOL_FAILURE = "TOOL_FAILURE"
     SYNTAX_ERROR = "SYNTAX_ERROR"
     PERMISSION_ERROR = "PERMISSION_ERROR"
+    # Behavioural anomaly: an agent calling the same tool with no exit condition.
+    # No exception is ever raised — only the live trace stream reveals it.
+    RUNAWAY_LOOP = "RUNAWAY_LOOP"
     GENERIC = "GENERIC"
 
 
@@ -87,6 +90,13 @@ class TraceEvent(BaseModel):
     provider: str           # "openai" | "anthropic" | "langchain"
     run_id: str             # groups start/end pairs and related events
     model: Optional[str] = None
+    # Tool-call identity — used by the runaway-loop detector to spot an agent
+    # invoking the same tool with the same arguments over and over.
+    tool_name: Optional[str] = None
+    tool_args: Optional[str] = None
+    # Where this call originates in the agent's source, "file.py:line:function".
+    # Lets the RCA pipeline locate the loop without a traceback.
+    code_location: Optional[str] = None
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     cost_usd: Optional[float] = None
@@ -99,10 +109,18 @@ class TraceEvent(BaseModel):
 
 
 class IncidentStatus(str, Enum):
-    OPEN      = "open"       # detected, patch not yet generated
-    PATCHED   = "patched"    # diff ready, awaiting human approval
-    APPROVED  = "approved"   # human clicked approve, patch applied to disk
-    DISMISSED = "dismissed"  # human dismissed — no action taken
+    OPEN            = "open"             # detected, patch not yet generated
+    PATCHED         = "patched"          # diff validated, awaiting approval
+    LOW_CONFIDENCE  = "low_confidence"   # diff generated but failed verification
+    APPROVED        = "approved"         # patch applied to disk
+    DISMISSED       = "dismissed"        # human dismissed — no action taken
+
+
+class ValidationStatus(str, Enum):
+    PENDING        = "pending"
+    PASSED         = "passed"
+    FAILED         = "failed"
+    LOW_CONFIDENCE = "low_confidence"
 
 
 class Incident(BaseModel):
@@ -130,6 +148,12 @@ class Incident(BaseModel):
 
     # Unified diff string produced by the patch generator
     diff: Optional[str] = None
+
+    # Verification pipeline results
+    validation_status:   ValidationStatus = ValidationStatus.PENDING
+    confidence:          Optional[int] = None        # 0-100
+    validation_errors:   list[str] = Field(default_factory=list)
+    validation_warnings: list[str] = Field(default_factory=list)
 
     source: str = "unknown"
     # How many times this exact error has fired (dedup counter)

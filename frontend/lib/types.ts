@@ -5,7 +5,11 @@ export type ErrorType =
   | "IMPORT_ERROR" | "TRACEBACK" | "RATE_LIMIT" | "TOOL_FAILURE"
   | "SYNTAX_ERROR" | "PERMISSION_ERROR" | "GENERIC";
 
-export type IncidentStatus = "open" | "patched" | "approved" | "dismissed";
+export type IncidentStatus =
+  | "open" | "patched" | "low_confidence" | "approved" | "dismissed";
+
+export type ValidationStatus =
+  | "pending" | "passed" | "failed" | "low_confidence";
 
 export interface LogEvent {
   id: string;
@@ -50,6 +54,10 @@ export interface Incident {
   code_context: string | null;
   context_start_line: number | null;
   diff: string | null;
+  validation_status: ValidationStatus;
+  confidence: number | null;
+  validation_errors: string[];
+  validation_warnings: string[];
   source: string;
   hit_count: number;
 }

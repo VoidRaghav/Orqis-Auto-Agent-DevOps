@@ -108,7 +108,7 @@ function KpiBar({ events, incidents, connected }: {
 }) {
   const errors   = events.filter(e => e.is_error).length;
   const warnings = events.filter(e => e.level === "WARNING").length;
-  const open     = incidents.filter(i => i.status === "open" || i.status === "patched").length;
+  const open     = incidents.filter(i => i.status === "open" || i.status === "patched" || i.status === "low_confidence").length;
   const healed   = incidents.filter(i => i.status === "approved").length;
 
   const kpis = [
@@ -270,24 +270,32 @@ function IncidentCard({
   onDismiss,
 }: {
   incident: Incident;
-  onApprove: (id: string) => void;
+  onApprove: (id: string, force?: boolean) => void;
   onDismiss: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const statusColor = {
-    open:      C.amber,
-    patched:   C.green,
-    approved:  C.green,
-    dismissed: C.dim,
+    open:           C.amber,
+    patched:        C.green,
+    low_confidence: C.amber,
+    approved:       C.green,
+    dismissed:      C.dim,
   }[incident.status] ?? C.dim;
 
-  const isActive = incident.status === "open" || incident.status === "patched";
+  const isActive =
+    incident.status === "open" ||
+    incident.status === "patched" ||
+    incident.status === "low_confidence";
+
+  const isLowConf = incident.status === "low_confidence";
+  const conf = incident.confidence;
+  const confColor = conf == null ? C.dim : conf >= 70 ? C.green : conf >= 50 ? C.amber : C.red;
 
   async function handleApprove() {
     setLoading(true);
-    try { await onApprove(incident.id); } finally { setLoading(false); }
+    try { await onApprove(incident.id, isLowConf); } finally { setLoading(false); }
   }
   async function handleDismiss() {
     setLoading(true);
@@ -324,6 +332,19 @@ function IncidentCard({
 
         {incident.hit_count > 1 && (
           <span style={{ ...mono, fontSize: 10, color: C.red, flexShrink: 0 }}>×{incident.hit_count}</span>
+        )}
+
+        {conf != null && (
+          <span style={{
+            ...mono, fontSize: 9,
+            padding: "2px 7px", borderRadius: 4,
+            background: confColor + "18",
+            color: confColor,
+            letterSpacing: "0.04em",
+            flexShrink: 0,
+          }}>
+            {conf}/100
+          </span>
         )}
 
         {incident.error_type && (
@@ -391,6 +412,31 @@ function IncidentCard({
             </div>
           )}
 
+          {/* verification results */}
+          {(incident.validation_errors?.length > 0 || incident.validation_warnings?.length > 0) && (
+            <div style={{
+              marginBottom: 12,
+              background: C.bg,
+              border: `1px solid ${(isLowConf ? C.red : C.amber) + "30"}`,
+              borderRadius: 6,
+              padding: "8px 12px",
+            }}>
+              <div style={{ ...mono, fontSize: 9, color: C.dim, letterSpacing: "0.08em", marginBottom: 6 }}>
+                VERIFICATION {isLowConf ? "· FAILED" : "· WARNINGS"}
+              </div>
+              {incident.validation_errors?.map((e, i) => (
+                <div key={`e${i}`} style={{ ...mono, fontSize: 11, color: C.red, lineHeight: 1.6 }}>
+                  ✗ {e}
+                </div>
+              ))}
+              {incident.validation_warnings?.map((w, i) => (
+                <div key={`w${i}`} style={{ ...mono, fontSize: 11, color: C.amber, lineHeight: 1.6 }}>
+                  ⚠ {w}
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* diff */}
           {incident.diff && (
             <div style={{ marginBottom: 12 }}>
@@ -414,16 +460,18 @@ function IncidentCard({
                     ...inter,
                     padding: "7px 18px",
                     borderRadius: 7,
-                    border: `1px solid ${C.green}40`,
-                    background: `${C.green}12`,
-                    color: C.green,
+                    border: `1px solid ${(isLowConf ? C.amber : C.green)}40`,
+                    background: `${(isLowConf ? C.amber : C.green)}12`,
+                    color: isLowConf ? C.amber : C.green,
                     fontSize: 12,
                     fontWeight: 600,
                     cursor: loading ? "not-allowed" : "pointer",
                     transition: "all 0.15s",
                   }}
                 >
-                  {loading ? "Applying…" : "Apply Fix →"}
+                  {loading
+                    ? "Applying…"
+                    : isLowConf ? "Force Apply (low confidence) →" : "Apply Fix →"}
                 </button>
               )}
               <button
@@ -509,7 +557,7 @@ export default function Dashboard() {
   const { events, traces, incidents, connected, approveIncident, dismissIncident } =
     useOrqisStream(WS_URL, API_URL);
 
-  const [activeTab, setActiveTab] = useState<"logs" | "incidents" | "traces">("logs");
+  const [activeTab, setActiveTab] = useState<"logs" | "incidents" | "traces">("incidents");
   const [autoScroll, setAutoScroll] = useState(true);
   const logRef = useRef<HTMLDivElement>(null);
   const prevEventCount = useRef(0);
@@ -532,13 +580,13 @@ export default function Dashboard() {
   }, [events[0]?.id]);
 
   const sparkData = buildSparkline(events);
-  const openCount = incidents.filter(i => i.status === "open" || i.status === "patched").length;
+  const openCount = incidents.filter(i => i.status === "open" || i.status === "patched" || i.status === "low_confidence").length;
   const totalCost = traces.reduce((s, t) => s + (t.cost_usd ?? 0), 0);
 
   const tabs = [
-    { id: "logs",      label: "LOG STREAM",  badge: null },
-    { id: "incidents", label: "INCIDENTS",   badge: openCount > 0 ? openCount : null },
-    { id: "traces",    label: "TRACES",      badge: null },
+    { id: "incidents", label: "ISSUES & FIXES",  badge: openCount > 0 ? openCount : null },
+    { id: "logs",      label: "ACTIVITY",        badge: null },
+    { id: "traces",    label: "AI CALLS",        badge: null },
   ] as const;
 
   return (
@@ -590,6 +638,13 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Plain-English health banner — the first thing a user reads */}
+      <HealthHero
+        incidents={incidents}
+        connected={connected}
+        onViewIssues={() => setActiveTab("incidents")}
+      />
 
       {/* KPI bar */}
       <KpiBar events={events} incidents={incidents} connected={connected} />
@@ -682,7 +737,7 @@ export default function Dashboard() {
             {activeTab === "incidents" && (
               <div style={{ padding: 14 }}>
                 {incidents.length === 0
-                  ? <EmptyState label="No incidents yet." />
+                  ? <EmptyState label="No problems found. Your app is healthy." />
                   : incidents.map(i => (
                       <IncidentCard
                         key={i.id}
@@ -774,6 +829,107 @@ export default function Dashboard() {
             </div>
           </Panel>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── health hero ───────────────────────────────────────────────────────────────
+// The one element a non-technical user reads first: is my app okay?
+function HealthHero({
+  incidents,
+  connected,
+  onViewIssues,
+}: {
+  incidents: Incident[];
+  connected: boolean;
+  onViewIssues: () => void;
+}) {
+  const needsYou = incidents.filter(
+    i => i.status === "patched" || i.status === "low_confidence",
+  ).length;
+  const fixing = incidents.filter(i => i.status === "open").length;
+  const healed = incidents.filter(i => i.status === "approved").length;
+
+  let tone: string, title: string, sub: string;
+  if (!connected) {
+    tone = C.dim;
+    title = "Connecting to your app…";
+    sub = "Waiting for the Orqis monitor to come online.";
+  } else if (needsYou > 0) {
+    tone = C.amber;
+    title = needsYou === 1 ? "1 fix is ready for you" : `${needsYou} fixes are ready for you`;
+    sub = "Orqis found the bug and wrote a fix. Review it and click Apply.";
+  } else if (fixing > 0) {
+    tone = C.blue;
+    title = fixing === 1 ? "Looking into 1 problem" : `Looking into ${fixing} problems`;
+    sub = "Orqis spotted an error and is figuring out the fix right now.";
+  } else {
+    tone = C.green;
+    title = "Everything's running smoothly";
+    sub = "No errors right now. Orqis is watching your app in the background.";
+  }
+
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 20,
+      padding: "20px 24px",
+      borderBottom: `1px solid ${C.border}`,
+      background: `linear-gradient(90deg, ${tone}0c 0%, transparent 60%)`,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+        <div style={{
+          width: 44, height: 44, borderRadius: 12,
+          background: tone + "1a",
+          border: `1px solid ${tone}40`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          flexShrink: 0,
+        }}>
+          <LiveDot color={tone} />
+        </div>
+        <div>
+          <div style={{
+            fontFamily: "'Anton', sans-serif",
+            fontSize: 24, color: C.white, letterSpacing: "0.01em", lineHeight: 1.1,
+          }}>
+            {title}
+          </div>
+          <div style={{ ...inter, fontSize: 13, color: C.dim, marginTop: 4 }}>
+            {sub}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 24, flexShrink: 0 }}>
+        {healed > 0 && (
+          <div style={{ textAlign: "right" as const }}>
+            <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 26, color: C.green, lineHeight: 1 }}>
+              {healed}
+            </div>
+            <div style={{ ...inter, fontSize: 11, color: C.dim }}>auto-fixed</div>
+          </div>
+        )}
+        {needsYou > 0 && (
+          <button
+            onClick={onViewIssues}
+            style={{
+              ...inter,
+              padding: "11px 22px",
+              borderRadius: 9,
+              border: `1px solid ${C.amber}55`,
+              background: `${C.amber}14`,
+              color: C.amber,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Review fixes →
+          </button>
+        )}
       </div>
     </div>
   );

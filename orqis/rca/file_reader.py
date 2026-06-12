@@ -87,6 +87,22 @@ def extract(error_text: str, project_root: Optional[str] = None) -> Optional[Cod
     return _read_context(file_path, line)
 
 
+def read_at(file_path: str, line: int, project_root: Optional[str] = None) -> Optional[CodeLocation]:
+    """
+    Resolve a CodeLocation directly from a known file and line — used by the
+    anomaly detector, which already knows where the looping call lives and has
+    no traceback to parse.
+
+    Honours the same project-root path-traversal guard as extract().
+    """
+    abs_path = os.path.abspath(file_path)
+    if not os.path.isfile(abs_path):
+        return None
+    if project_root and not abs_path.startswith(os.path.abspath(project_root)):
+        return None
+    return _read_context(abs_path, line)
+
+
 def _parse_frames(text: str) -> list[tuple[str, int]]:
     """Return all (file_path, line_number) pairs from a traceback string."""
     return [

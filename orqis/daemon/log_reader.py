@@ -132,42 +132,70 @@ def _print_event(event: LogEvent) -> None:
     print(f"{colour}{ts}  {event.level.value:<8}  {tag:<16}  {event.raw_line}{reset}")
 
 
+# A traceback that never terminates is discarded past this many lines.
+_MAX_TB_LINES = 200
+
+
 def _handle_traceback(client: httpx.AsyncClient, line: str, source: str) -> None:
     """
     Buffer traceback lines per source. When the terminal exception line
     arrives, flush the full traceback to the RCA pipeline trigger endpoint.
+
+    A Python traceback body alternates between "File ..." frame lines and
+    indented source-code lines, so both — plus blank lines — must be kept.
+    Only a non-indented line that is not the exception terminator ends it.
     """
     buf = _tb_buffers[source]
 
     if _TB_START.search(line):
-        # Start of a new traceback — reset and begin buffering
         _tb_buffers[source] = [line]
         return
 
-    if buf:
+    if not buf:
+        return
+
+    stripped = line.strip()
+
+    # Terminal exception line — flush the full traceback to RCA
+    if _TB_END.match(stripped):
         buf.append(line)
-        if _TB_END.match(line.strip()):
-            # Full traceback collected — trigger RCA
-            full_tb = "\n".join(buf)
+        full_tb = "\n".join(buf)
+        _tb_buffers[source] = []
+        asyncio.create_task(_post_rca_trigger(client, full_tb, source))
+        return
+
+    # Frame lines, indented source-code lines and blank lines are body
+    if _TB_FRAME.match(line) or line[:1] in (" ", "\t") or not stripped:
+        buf.append(line)
+        if len(buf) > _MAX_TB_LINES:
             _tb_buffers[source] = []
-            asyncio.create_task(_post_rca_trigger(client, full_tb, source))
-        elif not _TB_FRAME.match(line) and "File " not in line:
-            # Line breaks the traceback sequence — discard buffer
-            _tb_buffers[source] = []
+        return
+
+    # Non-indented, non-terminator line — traceback ended unrecognized
+    _tb_buffers[source] = []
 
 
 async def _post_rca_trigger(
     client: httpx.AsyncClient, traceback_text: str, source: str
 ) -> None:
     """POST a full traceback to the backend RCA trigger endpoint."""
+    lines = len(traceback_text.splitlines())
     try:
-        await client.post(
+        resp = await client.post(
             f"{config.BACKEND_URL}/rca/trigger",
             json={"traceback": traceback_text, "source": source},
             timeout=10.0,
         )
-    except Exception:
-        pass  # Non-blocking — RCA is best-effort
+        print(
+            f"\033[35m[orqis] RCA triggered — {lines}-line traceback "
+            f"→ {resp.status_code}\033[0m",
+            file=sys.stderr,
+        )
+    except Exception as e:
+        print(
+            f"\033[31m[orqis] RCA trigger failed ({type(e).__name__}): {e}\033[0m",
+            file=sys.stderr,
+        )
 
 
 async def _interpret_and_update(client, event_id, line, error_type) -> None:
