@@ -73,4 +73,5 @@ export type WsPayload =
   | { type: "incident.updated";       data: Incident }
   | { type: "incident.approved";      data: Incident }
   | { type: "incident.dismissed";     data: Incident }
-  | { type: "incident.interpretation";data: Incident };
+  | { type: "incident.interpretation";data: Incident }
+  | { type: "store.cleared";          data: Record<string, never> };
