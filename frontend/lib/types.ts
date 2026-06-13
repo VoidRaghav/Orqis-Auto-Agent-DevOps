@@ -29,6 +29,7 @@ export interface TraceEvent {
   provider: string;
   run_id: string;
   model: string | null;
+  tool_name: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
   cost_usd: number | null;

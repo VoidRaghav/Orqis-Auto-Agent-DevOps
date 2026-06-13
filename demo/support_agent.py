@@ -124,6 +124,7 @@ def _send_trace(call_no: int, cost: float) -> bool:
         "input_tokens": 900 + call_no * 60,   # context grows every turn
         "output_tokens": 70,
         "cost_usd": cost,
+        "latency_ms": random.randint(280, 620),
         "tool_name": "check_order_status",
         "tool_args": ORDER_ID,
         "code_location": f"{os.path.abspath(__file__)}:{_LOOP_LINE}:resolve_refund",
@@ -198,39 +199,69 @@ def _emit(event: dict) -> None:
     line = _plain_line(event)
     if line is None:
         return
-    print(f"{datetime.now().strftime('%H:%M:%S')} support-agent {line}", flush=True)
-    _send_log(line)
+    level = _level_for(event)
+    print(f"{datetime.now().strftime('%H:%M:%S')} support-agent {level} {line}", flush=True)
+    _send_log(line, level)
 
 
 def _plain_line(event: dict) -> Optional[str]:
-    """Human-readable, ANSI-free log line for stdout and the Orqis log stream."""
+    """
+    Raw operational log line for stdout and the Orqis ACTIVITY stream — the kind
+    of feed a real app prints. Deliberately app-level narrative (no token/cost
+    breakdown; that lives in the AI CALLS trace stream).
+    """
     t = event["type"]
     if t == "online":
-        return "refund agent online"
+        return "RefundBot worker online, polling support queue"
     if t == "customer":
-        return f'customer asks: "{event["text"]}"'
+        return f"ticket #{ORDER_ID} opened: customer asking about their refund"
     if t == "call":
-        return (f"check_order_status({event['args']}) -> '{event['result']}' "
-                f"| ${event['cost']:.2f} this call | ${event['spent']:.2f} burned "
-                f"| 0 resolved")
+        if event["n"] < 4:
+            return f"ticket #{ORDER_ID}: order status is 'processing', re-checking"
+        return f"ticket #{ORDER_ID}: order still 'processing' after {event['n']} checks, no progress"
     if t == "warn":
         return event["text"]
     if t == "halted":
-        return (f"Orqis circuit breaker tripped — stopped after {event['calls']} "
-                f"repeated calls (${event['spent']:.2f}), runaway spend halted")
+        return (f"RefundBot stopped on ticket #{ORDER_ID} by Orqis after "
+                f"{event['calls']} repeated checks with no progress")
     if t == "backstop":
-        return f"demo backstop reached at {event['calls']} calls (${event['spent']:.2f})"
+        return f"demo backstop reached at {event['calls']} checks"
     if t == "resolved":
-        return (f"handled correctly after {event['calls']} calls (${event['spent']:.2f}) "
-                f"— bounded retries, {event['text']}")
+        return f"ticket #{ORDER_ID} escalated to a human agent after {event['calls']} checks"
     return None
 
 
-def _send_log(line: str) -> None:
-    """Push one log line to Orqis so it appears in the dashboard ACTIVITY tab."""
-    payload = json.dumps({"lines": [line], "source": SOURCE}).encode()
+def _level_for(event: dict) -> str:
+    """
+    Log level for the ACTIVITY stream. Stays INFO/WARNING — nothing here ever
+    errors, yet Orqis still catches the loop from the trace stream. That flat
+    error rate next to a filed incident is the whole point: no exception, no
+    crash, no linter would catch this.
+    """
+    t = event["type"]
+    if t in ("halted", "backstop", "warn"):
+        return "WARNING"
+    if t == "call" and event["n"] >= 4:
+        return "WARNING"
+    return "INFO"
+
+
+def _send_log(line: str, level: str) -> None:
+    """
+    Push one log line to Orqis's ACTIVITY stream with an explicit level. Posts a
+    fully-formed event (is_error stays False) so the level badge is exact and no
+    RCA is triggered from the raw feed.
+    """
+    payload = json.dumps({
+        "id": str(uuid.uuid4()),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "raw_line": line,
+        "level": level,
+        "is_error": False,
+        "source": SOURCE,
+    }).encode()
     req = urllib.request.Request(
-        f"{BACKEND_URL}/ingest",
+        f"{BACKEND_URL}/events",
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",

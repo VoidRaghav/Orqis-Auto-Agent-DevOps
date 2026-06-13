@@ -540,6 +540,14 @@ function TraceRow({ trace }: { trace: TraceEvent }) {
       </span>
       <span style={{ ...mono, fontSize: 10, color: C.dim, flexShrink: 0 }}>{trace.provider}</span>
       {trace.model && <span style={{ ...mono, fontSize: 10, color: "#555", flexShrink: 0 }}>{trace.model}</span>}
+      {trace.tool_name && (
+        <span style={{ ...mono, fontSize: 10, color: C.blue, flexShrink: 0 }}>{trace.tool_name}()</span>
+      )}
+      {(trace.input_tokens != null || trace.output_tokens != null) && (
+        <span style={{ ...mono, fontSize: 10, color: "#555", flexShrink: 0 }}>
+          {trace.input_tokens ?? 0}→{trace.output_tokens ?? 0} tok
+        </span>
+      )}
       {trace.cost_usd != null && (
         <span style={{ ...mono, fontSize: 10, color: trace.cost_usd > 0.1 ? C.amber : C.green, marginLeft: "auto", flexShrink: 0 }}>
           ${trace.cost_usd.toFixed(4)}
