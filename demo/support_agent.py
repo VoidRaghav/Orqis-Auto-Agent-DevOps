@@ -38,6 +38,18 @@ BACKEND_URL = os.getenv("ORQIS_BACKEND_URL", "http://localhost:8000")
 SOURCE = "support-agent"
 ORDER_ID = "1042"
 
+# Use Orqis's real production pricing engine to cost each call. Falls back to
+# the same gpt-4o formula if the package isn't importable, so cost is always
+# derived from tokens × price — never a made-up number.
+try:
+    from orqis.instrumentation import costs as _costs
+
+    def _cost_for(model: str, input_tokens: int, output_tokens: int) -> float:
+        return _costs.calculate(model, input_tokens, output_tokens) or 0.0
+except Exception:
+    def _cost_for(model: str, input_tokens: int, output_tokens: int) -> float:
+        return round((input_tokens * 2.50 + output_tokens * 10.00) / 1_000_000, 8)
+
 # Demo backstop only. The bug is a genuinely unbounded loop — this cap exists
 # so the session can never run forever if the backend is down. Orqis trips the
 # real circuit breaker long before this (around call 8).
@@ -91,7 +103,14 @@ def check_order_status(order_id: str) -> str:
     """
     global _calls, _spent
     _calls += 1
-    cost = round(random.uniform(0.05, 0.09), 4)
+
+    # A real agent turn: a large, growing context (system prompt + tool schemas
+    # + conversation history) and a short tool-decision output. Cost is computed
+    # exactly the way the production SDK does it — real per-1M-token gpt-4o
+    # pricing via orqis.instrumentation.costs — not a made-up number.
+    input_tokens = 18000 + _calls * 800
+    output_tokens = random.randint(150, 260)
+    cost = _cost_for("gpt-4o", input_tokens, output_tokens)
     _spent += cost
     _emit({
         "type": "call",
@@ -99,11 +118,11 @@ def check_order_status(order_id: str) -> str:
         "tool": "check_order_status",
         "args": order_id,
         "result": "processing",
-        "cost": round(cost, 2),
+        "cost": round(cost, 4),
         "spent": round(_spent, 2),
     })
 
-    if _send_trace(_calls, cost):
+    if _send_trace(input_tokens, output_tokens, cost):
         raise CircuitBreak(_calls, _spent)
     if _calls >= MAX_CALLS:
         raise CircuitBreak(_calls, _spent, backstop=True)
@@ -112,7 +131,7 @@ def check_order_status(order_id: str) -> str:
     return "processing"
 
 
-def _send_trace(call_no: int, cost: float) -> bool:
+def _send_trace(input_tokens: int, output_tokens: int, cost: float) -> bool:
     """Stream one tool call to Orqis. Returns True when the breaker has tripped."""
     event = {
         "id": str(uuid.uuid4()),
@@ -121,8 +140,8 @@ def _send_trace(call_no: int, cost: float) -> bool:
         "provider": "openai",
         "run_id": f"refund-{ORDER_ID}",
         "model": "gpt-4o",
-        "input_tokens": 900 + call_no * 60,   # context grows every turn
-        "output_tokens": 70,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
         "cost_usd": cost,
         "latency_ms": random.randint(280, 620),
         "tool_name": "check_order_status",
