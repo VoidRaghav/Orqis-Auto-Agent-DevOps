@@ -25,6 +25,10 @@ dump.rdb
 node_modules/
 .next/
 out/
+*.tsbuildinfo
+
+# Local-only docs (not shared in the repo)
+ORQIS_OVERVIEW.md
 
 # Editors
 .idea/
