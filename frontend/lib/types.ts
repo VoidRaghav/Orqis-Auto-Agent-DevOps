@@ -83,6 +83,7 @@ export interface WorkspaceSettings {
   account_login: string | null;
   repos: string[];
   source_repo_map: Record<string, string>;
+  default_repo: string;
   default_branch: string;
   hot_reload_webhook_url: string;
   auto_merge_enabled: boolean;

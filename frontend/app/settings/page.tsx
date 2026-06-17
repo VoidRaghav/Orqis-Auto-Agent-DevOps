@@ -25,7 +25,7 @@ export default function SettingsPage() {
   const [ideSetup, setIdeSetup] = useState<IdeSetupInfo | null>(null);
   const [settings, setSettings] = useState<WorkspaceSettings | null>(null);
   const [adminToken, setAdminToken] = useState("");
-  const [mapText, setMapText] = useState("");
+  const [mapRows, setMapRows] = useState<{ source: string; repo: string }[]>([]);
   const [mcpCopied, setMcpCopied] = useState(false);
   const [status, setStatus] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -44,10 +44,11 @@ export default function SettingsPage() {
       setGithub(g);
       setSettings(s);
       setIdeSetup(ide);
-      setMapText(
-        Object.entries(s.source_repo_map ?? {})
-          .map(([k, v]) => `${k} = ${v}`)
-          .join("\n")
+      setMapRows(
+        Object.entries(s.source_repo_map ?? {}).map(([source, repo]) => ({
+          source,
+          repo: repo as string,
+        }))
       );
     } catch {
       setStatus({ kind: "err", msg: "Could not reach the Orqis backend." });
@@ -65,14 +66,11 @@ export default function SettingsPage() {
     }
   }, [load]);
 
-  function parseMap(text: string): Record<string, string> {
+  function rowsToMap(rows: { source: string; repo: string }[]): Record<string, string> {
     const out: Record<string, string> = {};
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const [k, ...rest] = trimmed.split("=");
-      const v = rest.join("=").trim();
-      if (k && v) out[k.trim()] = v;
+    for (const { source, repo } of rows) {
+      const s = source.trim();
+      if (s && repo) out[s] = repo;
     }
     return out;
   }
@@ -84,7 +82,8 @@ export default function SettingsPage() {
     localStorage.setItem(ADMIN_TOKEN_KEY, adminToken);
     try {
       const body = {
-        source_repo_map: parseMap(mapText),
+        source_repo_map: rowsToMap(mapRows),
+        default_repo: settings.default_repo,
         default_branch: settings.default_branch,
         hot_reload_webhook_url: settings.hot_reload_webhook_url,
         auto_merge_enabled: settings.auto_merge_enabled,
@@ -137,6 +136,9 @@ export default function SettingsPage() {
       setStatus({ kind: "err", msg: "Could not copy — select the JSON below manually." });
     }
   }
+
+  const grantedRepos = github?.repos ?? [];
+  const githubConnected = !!github?.connected;
 
   return (
     <div style={{ ...inter, background: C.bg, color: "#ddd", minHeight: "100vh", padding: "48px 24px" }}>
@@ -213,20 +215,102 @@ export default function SettingsPage() {
 
         {settings && (
           <>
-            {/* source -> repo mapping */}
-            <Section title="Source → repo mapping">
-              <p style={{ color: "#888", fontSize: 12, marginBottom: 8 }}>
-                Map each log <code>source</code> label to a repo. One per line:{" "}
-                <code>shop-api = owner/shop-api</code>. With a single connected repo, mapping is optional.
-              </p>
-              <textarea
-                value={mapText}
-                onChange={(e) => setMapText(e.target.value)}
-                rows={4}
-                spellCheck={false}
-                style={input(true)}
-                placeholder="shop-api = owner/shop-api"
-              />
+            {/* repository routing — choose from repos you actually granted */}
+            <Section title="Repositories">
+              {!githubConnected ? (
+                <Note color={C.amber}>
+                  Connect GitHub above to choose which repositories Orqis can open fix PRs against.
+                </Note>
+              ) : grantedRepos.length === 0 ? (
+                <Note color={C.amber}>
+                  No repositories were granted to the Orqis app. Open the GitHub App settings and
+                  grant access to at least one repo, then reload.
+                </Note>
+              ) : (
+                <>
+                  <p style={{ color: "#888", fontSize: 12, marginBottom: 10 }}>
+                    Default repository — where Orqis opens fix PRs for any log{" "}
+                    <code>source</code> without a specific mapping below.
+                  </p>
+                  <RepoSelect
+                    repos={grantedRepos}
+                    value={settings.default_repo}
+                    placeholder={
+                      grantedRepos.length === 1 ? grantedRepos[0] : "Select a repository…"
+                    }
+                    onChange={(repo) => setSettings({ ...settings, default_repo: repo })}
+                  />
+
+                  <div style={{ borderTop: `1px solid ${C.border}`, margin: "18px 0 14px" }} />
+
+                  <p style={{ color: "#888", fontSize: 12, marginBottom: 10 }}>
+                    Per-source routing (optional) — send a specific log <code>source</code> to a
+                    specific repo. Useful when one Orqis backend watches several services.
+                  </p>
+
+                  {mapRows.length === 0 && (
+                    <p style={{ ...mono, fontSize: 11, color: C.dim, marginBottom: 10 }}>
+                      No source mappings — everything uses the default repository.
+                    </p>
+                  )}
+
+                  {mapRows.map((row, i) => (
+                    <div
+                      key={i}
+                      style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}
+                    >
+                      <input
+                        value={row.source}
+                        onChange={(e) => {
+                          const next = [...mapRows];
+                          next[i] = { ...next[i], source: e.target.value };
+                          setMapRows(next);
+                        }}
+                        style={{ ...input(false), flex: 1 }}
+                        placeholder="log source (e.g. shop-api)"
+                        spellCheck={false}
+                      />
+                      <span style={{ color: C.dim, fontSize: 12 }}>→</span>
+                      <div style={{ flex: 1 }}>
+                        <RepoSelect
+                          repos={grantedRepos}
+                          value={row.repo}
+                          placeholder="Select repo…"
+                          onChange={(repo) => {
+                            const next = [...mapRows];
+                            next[i] = { ...next[i], repo };
+                            setMapRows(next);
+                          }}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setMapRows(mapRows.filter((_, n) => n !== i))}
+                        title="Remove mapping"
+                        style={{
+                          ...mono, fontSize: 14, lineHeight: 1, color: C.dim,
+                          background: "transparent", border: `1px solid ${C.border}`,
+                          borderRadius: 6, padding: "6px 10px", cursor: "pointer",
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+
+                  <button
+                    type="button"
+                    onClick={() => setMapRows([...mapRows, { source: "", repo: "" }])}
+                    style={{
+                      ...mono, fontSize: 12, color: C.blue, background: "transparent",
+                      border: `1px solid ${C.blue}40`, borderRadius: 6,
+                      padding: "6px 12px", cursor: "pointer", marginTop: 4,
+                    }}
+                  >
+                    + Add source mapping
+                  </button>
+                </>
+              )}
             </Section>
 
             {/* hot reload */}
@@ -313,6 +397,44 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </div>
       {children}
     </div>
+  );
+}
+
+function RepoSelect({
+  repos,
+  value,
+  placeholder,
+  onChange,
+}: {
+  repos: string[];
+  value: string;
+  placeholder: string;
+  onChange: (repo: string) => void;
+}) {
+  return (
+    <select
+      value={value || ""}
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        ...mono,
+        width: "100%",
+        background: C.bg,
+        border: `1px solid ${C.border}`,
+        borderRadius: 6,
+        color: value ? "#ddd" : "#666",
+        fontSize: 12,
+        padding: "9px 11px",
+        outline: "none",
+        cursor: "pointer",
+      }}
+    >
+      <option value="">{placeholder}</option>
+      {repos.map((r) => (
+        <option key={r} value={r} style={{ color: "#ddd", background: C.bg }}>
+          {r}
+        </option>
+      ))}
+    </select>
   );
 }
 

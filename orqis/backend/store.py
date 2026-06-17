@@ -357,6 +357,9 @@ _DEFAULT_SETTINGS: dict = {
     "account_login": None,
     "repos": [],
     "source_repo_map": {},
+    # Repo used for log sources without an explicit mapping. Must be one of the
+    # granted `repos`. Empty falls back to the single-repo case in repo_for_source.
+    "default_repo": "",
     "default_branch": "main",
     "hot_reload_webhook_url": "",
     "auto_merge_enabled": False,

@@ -549,6 +549,25 @@ async def update_settings(request: Request):
                 detail="hot_reload_webhook_url must be HTTPS and not an internal address",
             )
 
+    # A user can only map/select repos their installation actually granted.
+    current = await store.get_settings()
+    granted = set(current.get("repos") or [])
+    if granted:
+        repo_map = body.get("source_repo_map")
+        if isinstance(repo_map, dict):
+            bad = sorted({r for r in repo_map.values() if r and r not in granted})
+            if bad:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"not in your connected repositories: {', '.join(bad)}",
+                )
+        default_repo = body.get("default_repo")
+        if default_repo and default_repo not in granted:
+            raise HTTPException(
+                status_code=400,
+                detail=f"default repository '{default_repo}' is not one you have access to",
+            )
+
     updated = await store.save_settings(body)
     return {k: v for k, v in updated.items() if k not in _SECRET_SETTING_KEYS}
 

@@ -41,18 +41,31 @@ def repo_for_source(settings: dict, source: str) -> Optional[str]:
     """
     Map an incident source label to an owner/repo.
 
-    Tries the explicit source_repo_map first, then falls back to a single
-    connected repo when exactly one is available (zero-config common case).
+    Resolution order:
+      1. Explicit source_repo_map entry (exact, then "sentry:project" tail).
+      2. The user-selected default_repo (for multi-repo installs).
+      3. The single connected repo (zero-config common case).
+    Only repos the installation actually granted are ever returned.
     """
+    repos = settings.get("repos") or []
     mapping = settings.get("source_repo_map") or {}
+
+    def _granted(repo: Optional[str]) -> Optional[str]:
+        # Never target a repo outside the granted set (access guard).
+        return repo if repo and (not repos or repo in repos) else None
+
     if source in mapping:
-        return mapping[source]
+        return _granted(mapping[source])
     # "sentry:project" style sources — try the bare project name too.
     if ":" in source:
         tail = source.split(":", 1)[1]
         if tail in mapping:
-            return mapping[tail]
-    repos = settings.get("repos") or []
+            return _granted(mapping[tail])
+
+    default_repo = _granted(settings.get("default_repo"))
+    if default_repo:
+        return default_repo
+
     if len(repos) == 1:
         return repos[0]
     return None
