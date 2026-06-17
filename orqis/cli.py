@@ -5,7 +5,7 @@ Commands:
   orqis start             Start the backend server (Redis must be running)
   orqis monitor           Read logs from stdin or a file, stream to backend
   orqis incidents         Show active incidents with diffs — approve or dismiss
-  orqis mcp               Start the MCP server (for Claude Code / Cursor)
+  orqis mcp               Start the MCP server (any MCP-compatible IDE)
   orqis status            Check backend health
 
 Quick start (two terminals):
@@ -18,6 +18,7 @@ Railway setup (no local daemon needed — Railway pushes logs to Orqis):
 """
 
 import argparse
+import os
 import sys
 
 
@@ -61,6 +62,13 @@ def _cmd_monitor(args: argparse.Namespace) -> None:
         asyncio.run(_run())
     except KeyboardInterrupt:
         print("\n[orqis] monitor stopped", file=sys.stderr)
+
+
+def _admin_headers() -> dict:
+    import os
+
+    token = os.getenv("ORQIS_ADMIN_TOKEN", "")
+    return {"X-Orqis-Admin-Token": token} if token else {}
 
 
 def _cmd_incidents(args: argparse.Namespace) -> None:
@@ -122,7 +130,11 @@ def _cmd_incidents(args: argparse.Namespace) -> None:
             return
         elif choice == "a" and has_diff:
             try:
-                res = httpx.post(f"{base}/incidents/{inc['id']}/approve", timeout=15.0)
+                res = httpx.post(
+                    f"{base}/incidents/{inc['id']}/approve",
+                    headers=_admin_headers(),
+                    timeout=15.0,
+                )
                 if res.status_code == 200:
                     data = res.json()
                     print(f"  {_G}Patch applied to {data.get('file', 'file')}{_RST}")
@@ -132,7 +144,11 @@ def _cmd_incidents(args: argparse.Namespace) -> None:
                 print(f"  {_R}Error: {e}{_RST}")
         elif choice == "d":
             try:
-                httpx.post(f"{base}/incidents/{inc['id']}/dismiss", timeout=10.0)
+                httpx.post(
+                    f"{base}/incidents/{inc['id']}/dismiss",
+                    headers=_admin_headers(),
+                    timeout=10.0,
+                )
                 print(f"  {_DIM}Dismissed.{_RST}")
             except Exception as e:
                 print(f"  {_R}Error: {e}{_RST}")
@@ -185,7 +201,7 @@ def _print_incident(inc: dict) -> None:
 def _cmd_mcp(args: argparse.Namespace) -> None:
     from orqis.mcp.server import run
 
-    run(backend_url=args.backend_url)
+    run(backend_url=args.backend_url, admin_token=args.admin_token)
 
 
 def _cmd_status(args: argparse.Namespace) -> None:
@@ -236,11 +252,20 @@ def main() -> None:
     p_inc.set_defaults(func=_cmd_incidents)
 
     # --- mcp ---
-    p_mcp = sub.add_parser("mcp", help="start the MCP server for Claude Code / Cursor")
+    p_mcp = sub.add_parser(
+        "mcp",
+        help="start the MCP server (VS Code, Cursor, Claude Code, Windsurf, …)",
+    )
     p_mcp.add_argument(
         "--backend-url",
         default="http://localhost:8000",
         metavar="URL",
+    )
+    p_mcp.add_argument(
+        "--admin-token",
+        default=os.getenv("ORQIS_ADMIN_TOKEN", ""),
+        metavar="TOKEN",
+        help="ORQIS_ADMIN_TOKEN for approve/dismiss/PR actions (or set env var)",
     )
     p_mcp.set_defaults(func=_cmd_mcp)
 

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useOrqisStream } from "@/lib/useOrqisStream";
-import type { LogEvent, Incident, TraceEvent } from "@/lib/types";
+import type { LogEvent, Incident, TraceEvent, ChangeLogEntry, GithubConnectInfo } from "@/lib/types";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell,
@@ -58,6 +58,71 @@ const TYPE_COLOR: Record<string, string> = {
 const mono: React.CSSProperties = { fontFamily: "'DM Mono', monospace" };
 const inter: React.CSSProperties = { fontFamily: "'Inter', sans-serif" };
 
+const primaryBtn = (color: string, loading: boolean): React.CSSProperties => ({
+  ...inter,
+  padding: "7px 18px",
+  borderRadius: 7,
+  border: `1px solid ${color}40`,
+  background: `${color}12`,
+  color,
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: loading ? "not-allowed" : "pointer",
+  transition: "all 0.15s",
+});
+
+const ghostBtn = (loading: boolean): React.CSSProperties => ({
+  ...inter,
+  padding: "7px 18px",
+  borderRadius: 7,
+  border: `1px solid ${C.border}`,
+  background: "transparent",
+  color: C.dim,
+  fontSize: 12,
+  cursor: loading ? "not-allowed" : "pointer",
+  transition: "all 0.15s",
+});
+
+// Pull a human-readable message out of whatever an action threw. The API
+// helpers reject with the response body, which is usually {"detail": "..."}.
+function errorMessage(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.detail === "string") return parsed.detail;
+  } catch {
+    // not JSON — use the raw text
+  }
+  return raw || "Something went wrong. Please try again.";
+}
+
+// Copy text to the clipboard with a graceful fallback for browsers/contexts
+// where the async Clipboard API is unavailable or rejects (unfocused document,
+// non-secure origin, older browsers). Throws only if every method fails.
+async function copyToClipboard(text: string): Promise<void> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // fall through to the legacy path
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    const ok = document.execCommand("copy");
+    if (!ok) throw new Error("copy command rejected");
+  } finally {
+    document.body.removeChild(ta);
+  }
+}
+
 function Panel({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return (
     <div style={{
@@ -100,6 +165,17 @@ function LiveDot({ color = C.green }: { color?: string }) {
   );
 }
 
+// Incidents Orqis is still working or waiting on a human for. Includes the
+// GitHub PR-first states (pr_open while a PR awaits review, pr_failed and
+// patch_stale which need a retry).
+const ACTIVE_STATUSES = new Set<string>([
+  "open", "patching", "patched", "low_confidence", "pr_open", "pr_failed", "patch_stale",
+]);
+
+// Terminal "win" states: a fix the human accepted (approved, local flow) or a
+// merged fix PR (resolved, GitHub flow).
+const HEALED_STATUSES = new Set<string>(["approved", "resolved"]);
+
 // ── KPI bar ──────────────────────────────────────────────────────────────────
 function KpiBar({ events, incidents, connected }: {
   events: LogEvent[];
@@ -108,15 +184,14 @@ function KpiBar({ events, incidents, connected }: {
 }) {
   const errors   = events.filter(e => e.is_error).length;
   const warnings = events.filter(e => e.level === "WARNING").length;
-  const open     = incidents.filter(i => i.status === "open" || i.status === "patched" || i.status === "low_confidence").length;
-  const healed   = incidents.filter(i => i.status === "approved").length;
+  const open     = incidents.filter(i => ACTIVE_STATUSES.has(i.status)).length;
+  const healed   = incidents.filter(i => HEALED_STATUSES.has(i.status)).length;
 
   const kpis = [
-    { label: "LOG LINES",   val: events.length,  color: C.white  },
-    { label: "ERRORS",      val: errors,          color: C.red    },
-    { label: "WARNINGS",    val: warnings,        color: C.amber  },
-    { label: "OPEN",        val: open,            color: C.amber  },
-    { label: "HEALED",      val: healed,          color: C.green  },
+    { label: "ERRORS",   val: errors,    color: C.red   },
+    { label: "WARNINGS", val: warnings,  color: C.amber },
+    { label: "ACTIVE",   val: open,      color: C.amber },
+    { label: "HEALED",   val: healed,    color: C.green },
   ];
 
   return (
@@ -266,50 +341,86 @@ function DiffViewer({ diff }: { diff: string }) {
 // ── incident card ─────────────────────────────────────────────────────────────
 function IncidentCard({
   incident,
+  highlighted,
   onApprove,
   onDismiss,
+  onOpenPr,
+  onResolve,
+  onCopyPrompt,
 }: {
   incident: Incident;
-  onApprove: (id: string, force?: boolean) => void;
-  onDismiss: (id: string) => void;
+  highlighted?: boolean;
+  onApprove: (id: string, force?: boolean) => Promise<unknown>;
+  onDismiss: (id: string) => Promise<unknown>;
+  onOpenPr: (id: string) => Promise<unknown>;
+  onResolve: (id: string) => Promise<unknown>;
+  onCopyPrompt: (id: string) => Promise<string>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const statusColor = {
     open:           C.amber,
+    patching:       C.blue,
     patched:        C.green,
     low_confidence: C.amber,
     approved:       C.green,
     dismissed:      C.dim,
+    pr_open:        C.blue,
+    pr_failed:      C.red,
+    patch_stale:    C.amber,
+    resolved:       C.green,
   }[incident.status] ?? C.dim;
 
-  const isActive =
-    incident.status === "open" ||
-    incident.status === "patched" ||
-    incident.status === "low_confidence";
+  const isActive = ACTIVE_STATUSES.has(incident.status);
 
   const isLowConf = incident.status === "low_confidence";
+  const isGithub = !!incident.repo_full_name;
+  const canRetryPr = incident.status === "pr_failed" || incident.status === "patch_stale";
   const conf = incident.confidence;
   const confColor = conf == null ? C.dim : conf >= 70 ? C.green : conf >= 50 ? C.amber : C.red;
 
-  async function handleApprove() {
+  // Run an action, surfacing any failure inline instead of letting it become an
+  // unhandled promise rejection (which leaves the user with no feedback).
+  async function runAction(fn: () => Promise<unknown>) {
     setLoading(true);
-    try { await onApprove(incident.id, isLowConf); } finally { setLoading(false); }
+    setActionError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setActionError(errorMessage(e));
+    } finally {
+      setLoading(false);
+    }
   }
-  async function handleDismiss() {
-    setLoading(true);
-    try { await onDismiss(incident.id); } finally { setLoading(false); }
+  const handleApprove = () => runAction(() => onApprove(incident.id, isLowConf));
+  const handleDismiss = () => runAction(() => onDismiss(incident.id));
+  const handleOpenPr = () => runAction(() => onOpenPr(incident.id));
+  const handleResolve = () => runAction(() => onResolve(incident.id));
+  async function handleCopyPrompt() {
+    try {
+      const prompt = await onCopyPrompt(incident.id);
+      await copyToClipboard(prompt);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopyFailed(true);
+      setTimeout(() => setCopyFailed(false), 2500);
+    }
   }
 
   return (
     <div style={{
       background: isActive ? C.bg2 : "transparent",
-      border: `1px solid ${isActive ? statusColor + "30" : C.border}`,
+      border: `1px solid ${highlighted ? C.green : isActive ? statusColor + "30" : C.border}`,
       borderRadius: 10,
       marginBottom: 8,
       overflow: "hidden",
       transition: "border-color 0.3s ease",
+      boxShadow: highlighted ? `0 0 0 1px ${C.green}40` : "none",
       animation: incident.status === "open" ? "row-pulse 3s ease-in-out infinite" : "none",
     }}>
       {/* header row */}
@@ -357,9 +468,10 @@ function IncidentCard({
           {incident.error_message.slice(0, 120)}
         </span>
 
-        {incident.file_path && (
+        {(incident.repo_relative_path || incident.file_path) && (
           <span style={{ ...mono, fontSize: 10, color: C.dim, flexShrink: 0 }}>
-            {incident.file_path.split("/").slice(-2).join("/")}:{incident.error_line}
+            {(incident.repo_relative_path || incident.file_path || "")
+              .replace(/\\/g, "/").split("/").slice(-2).join("/")}{incident.error_line ? `:${incident.error_line}` : ""}
           </span>
         )}
 
@@ -449,48 +561,79 @@ function IncidentCard({
             </div>
           )}
 
+          {/* PR error / stale notice */}
+          {incident.pr_error && (canRetryPr) && (
+            <div style={{
+              ...mono, fontSize: 11, color: C.amber, marginBottom: 10,
+              background: C.bg, border: `1px solid ${C.amber}30`, borderRadius: 6, padding: "8px 12px",
+            }}>
+              ⚠ {incident.pr_error}
+            </div>
+          )}
+
           {/* action buttons */}
-          {isActive && (
-            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-              {incident.diff && (
-                <button
-                  onClick={handleApprove}
-                  disabled={loading}
-                  style={{
-                    ...inter,
-                    padding: "7px 18px",
-                    borderRadius: 7,
-                    border: `1px solid ${(isLowConf ? C.amber : C.green)}40`,
-                    background: `${(isLowConf ? C.amber : C.green)}12`,
-                    color: isLowConf ? C.amber : C.green,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: loading ? "not-allowed" : "pointer",
-                    transition: "all 0.15s",
-                  }}
-                >
-                  {loading
-                    ? "Applying…"
-                    : isLowConf ? "Force Apply (low confidence) →" : "Apply Fix →"}
-                </button>
-              )}
-              <button
-                onClick={handleDismiss}
-                disabled={loading}
+          <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" as const }}>
+            {/* GitHub PR-first flow */}
+            {isGithub && incident.pr_url && (
+              <a
+                href={incident.pr_url}
+                target="_blank"
+                rel="noopener noreferrer"
                 style={{
-                  ...inter,
-                  padding: "7px 18px",
-                  borderRadius: 7,
-                  border: `1px solid ${C.border}`,
-                  background: "transparent",
-                  color: C.dim,
-                  fontSize: 12,
-                  cursor: loading ? "not-allowed" : "pointer",
-                  transition: "all 0.15s",
+                  ...inter, padding: "7px 18px", borderRadius: 7,
+                  border: `1px solid ${C.blue}40`, background: `${C.blue}12`,
+                  color: C.blue, fontSize: 12, fontWeight: 600, textDecoration: "none",
                 }}
               >
+                {incident.status === "resolved" ? "View merged PR" : `Review PR #${incident.pr_number} →`}
+              </a>
+            )}
+
+            {isGithub && incident.status === "pr_open" && (
+              <button onClick={handleResolve} disabled={loading} style={ghostBtn(loading)}>
+                Mark resolved
+              </button>
+            )}
+
+            {isGithub && canRetryPr && incident.diff && (
+              <button onClick={handleOpenPr} disabled={loading} style={primaryBtn(C.amber, loading)}>
+                {loading ? "Retrying…" : "Retry PR →"}
+              </button>
+            )}
+
+            {isGithub && incident.status === "low_confidence" && incident.diff && (
+              <button onClick={handleOpenPr} disabled={loading} style={primaryBtn(C.amber, loading)}>
+                {loading ? "Opening…" : "Open PR (low confidence) →"}
+              </button>
+            )}
+
+            {/* Local-dev apply path (no repo mapped) */}
+            {!isGithub && isActive && incident.diff && (
+              <button onClick={handleApprove} disabled={loading} style={primaryBtn(isLowConf ? C.amber : C.green, loading)}>
+                {loading ? "Applying…" : isLowConf ? "Force Apply (low confidence) →" : "Apply Fix →"}
+              </button>
+            )}
+
+            {/* IDE-agnostic: paste into any AI assistant chat */}
+            {incident.diff && incident.status !== "resolved" && (
+              <button onClick={handleCopyPrompt} disabled={loading} style={ghostBtn(loading)}>
+                {copied ? "Copied — paste in your IDE" : copyFailed ? "Copy failed — retry" : "Copy for AI assistant"}
+              </button>
+            )}
+
+            {isActive && (
+              <button onClick={handleDismiss} disabled={loading} style={ghostBtn(loading)}>
                 Dismiss
               </button>
+            )}
+          </div>
+
+          {actionError && (
+            <div style={{
+              ...mono, fontSize: 11, color: C.red, marginTop: 10,
+              background: C.bg, border: `1px solid ${C.red}30`, borderRadius: 6, padding: "8px 12px",
+            }}>
+              ✕ {actionError}
             </div>
           )}
         </div>
@@ -501,20 +644,154 @@ function IncidentCard({
 
 // ── error rate sparkline data ─────────────────────────────────────────────────
 function buildSparkline(events: LogEvent[]) {
-  const buckets: Record<string, { errors: number; total: number }> = {};
+  const buckets: { label: string; errors: number; total: number }[] = [];
   const now = Date.now();
   for (let i = 9; i >= 0; i--) {
-    const key = String(i);
-    buckets[key] = { errors: 0, total: 0 };
+    buckets.push({ label: `-${(i + 1) * 6}s`, errors: 0, total: 0 });
   }
   for (const e of events) {
     const age = (now - new Date(e.timestamp).getTime()) / 1000;
     if (age > 60) continue;
-    const bucket = String(Math.min(9, Math.floor(age / 6)));
-    buckets[bucket].total++;
-    if (e.is_error) buckets[bucket].errors++;
+    const bucket = Math.min(9, Math.floor(age / 6));
+    buckets[9 - bucket].total++;
+    if (e.is_error) buckets[9 - bucket].errors++;
   }
-  return Object.values(buckets).reverse();
+  return buckets;
+}
+
+// ── connected GitHub account / repo badge ─────────────────────────────────────
+function GithubBadge({ github }: { github: GithubConnectInfo | null }) {
+  const base: React.CSSProperties = {
+    ...mono, fontSize: 11, textDecoration: "none",
+    display: "flex", alignItems: "center", gap: 6,
+    padding: "4px 10px", borderRadius: 7, border: `1px solid ${C.border}`,
+  };
+
+  if (github?.connected) {
+    const repoCount = github.repos.length;
+    const label =
+      repoCount === 1 ? github.repos[0]
+      : repoCount > 1 ? `${github.account_login ?? "github"} · ${repoCount} repos`
+      : (github.account_login ?? "connected");
+    return (
+      <a href="/settings" title={`Connected to GitHub${github.account_login ? ` as ${github.account_login}` : ""}: ${github.repos.join(", ") || "no repos"}`}
+         style={{ ...base, color: C.green, borderColor: `${C.green}40`, background: `${C.green}10` }}>
+        <span style={{ fontSize: 12 }}>⎇</span>
+        <span style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{label}</span>
+      </a>
+    );
+  }
+
+  if (github?.configured) {
+    return (
+      <a href="/settings" style={{ ...base, color: C.amber, borderColor: `${C.amber}40`, background: `${C.amber}10` }}>
+        <span style={{ fontSize: 12 }}>⎇</span> Connect GitHub
+      </a>
+    );
+  }
+
+  // GitHub App not configured on this backend — local-only mode.
+  return (
+    <a href="/settings" title="GitHub App not configured — fixes apply to your local working copy"
+       style={{ ...base, color: C.dim }}>
+      <span style={{ fontSize: 12 }}>⎇</span> Local mode
+    </a>
+  );
+}
+
+// ── change-log row ────────────────────────────────────────────────────────────
+const CHANGE_META: Record<string, { label: string; color: string; icon: string }> = {
+  fix_applied: { label: "APPLIED LOCALLY", color: C.green, icon: "✎" },
+  pr_opened:   { label: "PR OPENED",       color: C.blue,  icon: "⤴" },
+  pr_merged:   { label: "PR MERGED",        color: C.green, icon: "✓" },
+  resolved:    { label: "RESOLVED",         color: C.green, icon: "✓" },
+  dismissed:   { label: "DISMISSED",        color: C.dim,   icon: "—" },
+  pr_failed:   { label: "PR FAILED",        color: C.red,   icon: "!" },
+  patch_stale: { label: "PATCH STALE",      color: C.amber, icon: "△" },
+};
+
+function ChangeRow({
+  change,
+  onViewIncident,
+}: {
+  change: ChangeLogEntry;
+  onViewIncident: (incidentId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = CHANGE_META[change.action] ?? { label: change.action.toUpperCase(), color: C.dim, icon: "•" };
+  const when = new Date(change.timestamp);
+  const timeLabel = when.toLocaleDateString() === new Date().toLocaleDateString()
+    ? when.toLocaleTimeString("en", { hour12: false })
+    : when.toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+  return (
+    <div style={{
+      marginBottom: 8,
+      background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 8,
+    }}>
+      <div style={{
+        display: "flex", alignItems: "center", gap: 12,
+        padding: "10px 14px", cursor: change.diff ? "pointer" : "default",
+      }}
+        onClick={() => change.diff && setExpanded(x => !x)}
+      >
+        <span style={{ color: meta.color, fontSize: 14, width: 16, textAlign: "center" as const, flexShrink: 0 }}>{meta.icon}</span>
+        <span style={{
+          ...mono, fontSize: 9, letterSpacing: "0.08em", flexShrink: 0,
+          padding: "3px 7px", borderRadius: 4,
+          background: meta.color + "18", color: meta.color, minWidth: 104, textAlign: "center" as const,
+        }}>
+          {meta.label}
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ ...inter, fontSize: 13, color: C.white, whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis" }}>
+            {change.summary}
+          </div>
+          <div style={{ ...mono, fontSize: 10, color: C.dim, marginTop: 2 }}>
+            {change.repo_full_name ? `${change.repo_full_name} · ` : ""}
+            {change.file ?? "—"}
+            {change.applied_locally ? " · written to disk" : ""}
+            {change.error_type ? ` · ${change.error_type}` : ""}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onViewIncident(change.incident_id); }}
+          style={{
+            ...mono, fontSize: 10, color: C.blue, background: "transparent",
+            border: `1px solid ${C.blue}40`, borderRadius: 5, padding: "4px 8px", cursor: "pointer", flexShrink: 0,
+          }}
+        >
+          View issue
+        </button>
+        {change.pr_url && (
+          <a href={change.pr_url} target="_blank" rel="noopener noreferrer"
+             onClick={e => e.stopPropagation()}
+             style={{ ...mono, fontSize: 11, color: C.blue, textDecoration: "none", flexShrink: 0 }}>
+            PR{change.pr_number ? ` #${change.pr_number}` : ""} →
+          </a>
+        )}
+        <span style={{ ...mono, fontSize: 10, color: C.dimmer, flexShrink: 0 }}>
+          {timeLabel}{change.diff ? (expanded ? " ▲" : " ▼") : ""}
+        </span>
+      </div>
+      {expanded && change.diff && (
+        <div style={{
+          padding: "0 14px 12px",
+          borderTop: `1px solid ${C.border}`,
+        }}>
+          <pre style={{
+            ...mono, fontSize: 10, color: "#aaa", margin: "10px 0 0",
+            whiteSpace: "pre-wrap" as const, wordBreak: "break-all" as const,
+            maxHeight: 220, overflow: "auto" as const,
+            background: C.bg, padding: 10, borderRadius: 6,
+          }}>
+            {change.diff}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── trace row ─────────────────────────────────────────────────────────────────
@@ -562,10 +839,11 @@ function TraceRow({ trace }: { trace: TraceEvent }) {
 
 // ── main dashboard ────────────────────────────────────────────────────────────
 export default function Dashboard() {
-  const { events, traces, incidents, connected, approveIncident, dismissIncident } =
+  const { events, traces, incidents, changes, github, connected, approveIncident, dismissIncident, openPr, resolveIncident, copyPrompt } =
     useOrqisStream(WS_URL, API_URL);
 
-  const [activeTab, setActiveTab] = useState<"logs" | "incidents" | "traces">("incidents");
+  const [activeTab, setActiveTab] = useState<"logs" | "incidents" | "traces" | "changes">("incidents");
+  const [highlightIncidentId, setHighlightIncidentId] = useState<string | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const logRef = useRef<HTMLDivElement>(null);
   const prevEventCount = useRef(0);
@@ -588,11 +866,18 @@ export default function Dashboard() {
   }, [events[0]?.id]);
 
   const sparkData = buildSparkline(events);
-  const openCount = incidents.filter(i => i.status === "open" || i.status === "patched" || i.status === "low_confidence").length;
+  const openCount = incidents.filter(i => ACTIVE_STATUSES.has(i.status)).length;
   const totalCost = traces.reduce((s, t) => s + (t.cost_usd ?? 0), 0);
+
+  const viewIncidentFromChange = useCallback((incidentId: string) => {
+    setActiveTab("incidents");
+    setHighlightIncidentId(incidentId);
+    setTimeout(() => setHighlightIncidentId(null), 2500);
+  }, []);
 
   const tabs = [
     { id: "incidents", label: "ISSUES & FIXES",  badge: openCount > 0 ? openCount : null },
+    { id: "changes",   label: "CHANGES",         badge: changes.length > 0 ? changes.length : null },
     { id: "logs",      label: "ACTIVITY",        badge: null },
     { id: "traces",    label: "AI CALLS",        badge: null },
   ] as const;
@@ -644,6 +929,10 @@ export default function Dashboard() {
               {connected ? "CONNECTED" : "OFFLINE"}
             </span>
           </div>
+          <GithubBadge github={github} />
+          <a href="/settings" style={{ ...mono, fontSize: 11, color: C.dim, textDecoration: "none" }}>
+            ⚙ Settings
+          </a>
         </div>
       </div>
 
@@ -750,12 +1039,26 @@ export default function Dashboard() {
                       <IncidentCard
                         key={i.id}
                         incident={i}
+                        highlighted={highlightIncidentId === i.id}
                         onApprove={approveIncident}
                         onDismiss={dismissIncident}
+                        onOpenPr={openPr}
+                        onResolve={resolveIncident}
+                        onCopyPrompt={copyPrompt}
                       />
                     ))
                 }
               </div>
+            )}
+
+            {activeTab === "changes" && (
+              changes.length === 0
+                ? <EmptyState label="No changes yet. When Orqis applies a fix or opens a PR, it shows up here." />
+                : <div style={{ padding: 14 }}>
+                    {changes.map(c => (
+                      <ChangeRow key={c.id} change={c} onViewIncident={viewIncidentFromChange} />
+                    ))}
+                  </div>
             )}
 
             {activeTab === "traces" && (
@@ -803,11 +1106,13 @@ export default function Dashboard() {
             </div>
           </Panel>
 
-          {/* Error type breakdown */}
-          <Panel>
-            <PanelHeader label="Error types" />
-            <ErrorBreakdown events={events} />
-          </Panel>
+          {/* Error type breakdown — only when there are actually errors */}
+          {events.some(e => e.is_error) && (
+            <Panel>
+              <PanelHeader label="Error types" />
+              <ErrorBreakdown events={events} />
+            </Panel>
+          )}
 
           {/* Cost tracker */}
           {traces.length > 0 && (
@@ -817,25 +1122,27 @@ export default function Dashboard() {
             </Panel>
           )}
 
-          {/* Setup hint */}
-          <Panel style={{ border: `1px solid ${C.green}20` }}>
-            <PanelHeader label="Connect your app" right={<span style={{ ...mono, fontSize: 9, color: C.green }}>SDK</span>} />
-            <div style={{ padding: "12px 14px" }}>
-              <div style={{ ...mono, fontSize: 10, color: C.dim, marginBottom: 8 }}>Instrument in one line:</div>
-              <div style={{
-                background: C.bg,
-                border: `1px solid ${C.border}`,
-                borderRadius: 6,
-                padding: "10px 12px",
-              }}>
-                <div style={{ ...mono, fontSize: 11, color: "#cc77ff" }}>import <span style={{ color: C.green }}>orqis</span></div>
-                <div style={{ ...mono, fontSize: 11, color: C.green }}>orqis<span style={{ color: C.white }}>.init()</span></div>
+          {/* Setup hint — only until the app is streaming (traces flowing) */}
+          {traces.length === 0 && (
+            <Panel style={{ border: `1px solid ${C.green}20` }}>
+              <PanelHeader label="Connect your app" right={<span style={{ ...mono, fontSize: 9, color: C.green }}>SDK</span>} />
+              <div style={{ padding: "12px 14px" }}>
+                <div style={{ ...mono, fontSize: 10, color: C.dim, marginBottom: 8 }}>Instrument in one line:</div>
+                <div style={{
+                  background: C.bg,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 6,
+                  padding: "10px 12px",
+                }}>
+                  <div style={{ ...mono, fontSize: 11, color: "#cc77ff" }}>import <span style={{ color: C.green }}>orqis</span></div>
+                  <div style={{ ...mono, fontSize: 11, color: C.green }}>orqis<span style={{ color: C.white }}>.init()</span></div>
+                </div>
+                <div style={{ ...inter, fontSize: 11, color: C.dim, marginTop: 10, lineHeight: 1.6 }}>
+                  Auto-patches OpenAI, Anthropic &amp; LangChain. Zero config.
+                </div>
               </div>
-              <div style={{ ...inter, fontSize: 11, color: C.dim, marginTop: 10, lineHeight: 1.6 }}>
-                Auto-patches OpenAI, Anthropic &amp; LangChain. Zero config.
-              </div>
-            </div>
-          </Panel>
+            </Panel>
+          )}
         </div>
       </div>
     </div>
@@ -853,11 +1160,20 @@ function HealthHero({
   connected: boolean;
   onViewIssues: () => void;
 }) {
-  const needsYou = incidents.filter(
-    i => i.status === "patched" || i.status === "low_confidence",
+  const prReady = incidents.filter(i => i.status === "pr_open").length;
+  const needsAttention = incidents.filter(
+    i => i.status === "pr_failed" || i.status === "patch_stale",
   ).length;
-  const fixing = incidents.filter(i => i.status === "open").length;
-  const healed = incidents.filter(i => i.status === "approved").length;
+  const needsYou = incidents.filter(
+    i =>
+      i.status === "patched" ||
+      i.status === "low_confidence" ||
+      i.status === "pr_open" ||
+      i.status === "pr_failed" ||
+      i.status === "patch_stale",
+  ).length;
+  const fixing = incidents.filter(i => i.status === "open" || i.status === "patching").length;
+  const healed = incidents.filter(i => HEALED_STATUSES.has(i.status)).length;
 
   let tone: string, title: string, sub: string;
   if (!connected) {
@@ -867,7 +1183,11 @@ function HealthHero({
   } else if (needsYou > 0) {
     tone = C.amber;
     title = needsYou === 1 ? "1 fix is ready for you" : `${needsYou} fixes are ready for you`;
-    sub = "Orqis found the bug and wrote a fix. Review it and click Apply.";
+    sub = needsAttention > 0
+      ? "A fix PR needs another look — open it to retry."
+      : prReady > 0
+        ? "Orqis opened a fix PR. Review and merge it to ship the fix."
+        : "Orqis found the bug and wrote a fix. Review it to apply.";
   } else if (fixing > 0) {
     tone = C.blue;
     title = fixing === 1 ? "Looking into 1 problem" : `Looking into ${fixing} problems`;

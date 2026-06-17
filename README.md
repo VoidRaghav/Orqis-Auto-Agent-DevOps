@@ -2,7 +2,7 @@
 
 Autonomous self-healing ops for AI agents and DevOps pipelines.
 
-**What it does:** monitors your logs in real time, classifies every error, generates plain-English explanations and unified diff patches, and surfaces incidents to your AI coding assistant (Claude Code, Cursor) via MCP so you can approve a fix in one click.
+**What it does:** monitors your logs in real time, classifies every error, generates plain-English explanations and unified diff patches, and surfaces incidents to your AI coding assistant via MCP (any MCP-compatible IDE) or a copy-paste prompt.
 
 ---
 
@@ -27,7 +27,7 @@ orqis monitor --file /var/log/app.log --source my-app
 # Or pipe any process
 my-process | orqis monitor --source worker
 
-# Terminal 3 (optional): MCP server for Claude Code / Cursor
+# Terminal 3 (optional): MCP server for VS Code, Cursor, Claude Code, Windsurf, …
 orqis mcp
 
 # Check health
@@ -105,22 +105,47 @@ This silently patches OpenAI, Anthropic, and LangChain clients if they are insta
 
 ---
 
-## Claude Code / Cursor integration (MCP)
+## IDE integration (MCP + copy-paste)
 
-Copy `.mcp.json` into your project root (edit the backend URL to your Railway URL):
+Orqis works with **any** editor or AI assistant — not just one vendor.
+
+### Option A — MCP (recommended)
+
+Add the Orqis MCP server to your IDE. Every MCP client spawns the same stdio process:
+
+```bash
+orqis mcp --backend-url http://localhost:8000
+```
+
+Copy `.mcp.json` into your project root (edit the backend URL for production):
 
 ```json
 {
   "mcpServers": {
     "orqis": {
       "command": "orqis",
-      "args": ["mcp", "--backend-url", "https://orqis-production.up.railway.app"]
+      "args": ["mcp", "--backend-url", "https://orqis-production.up.railway.app"],
+      "env": { "ORQIS_ADMIN_TOKEN": "" }
     }
   }
 }
 ```
 
-Claude Code will now have `list_incidents`, `get_incident`, `approve_incident`, and `dismiss_incident` as native tools. When Orqis detects a production error and generates a patch, Claude Code can review and apply it without leaving the editor.
+| IDE / agent | Where to add the server |
+|---|---|
+| **Cursor / Windsurf / Claude Code** | Project `.mcp.json` (or user MCP config) |
+| **VS Code** | Settings → MCP → add stdio server |
+| **JetBrains / Zed / others** | MCP settings → command `orqis`, args `mcp --backend-url …` |
+
+When `ORQIS_ADMIN_TOKEN` is set on the backend, put the same value in the MCP `env` block (or pass `--admin-token`) so approve/dismiss/open-PR tools work.
+
+Tools exposed: `list_incidents`, `get_incident`, `get_incident_prompt`, `approve_incident`, `open_pr`, `resolve_incident`, `dismiss_incident`.
+
+The dashboard **Settings** page also fetches `GET /integrations/ide-setup` with copy-paste snippets per IDE.
+
+### Option B — Copy for AI assistant (no MCP)
+
+On the dashboard, click **Copy for AI assistant** on any incident. Paste the prompt into VS Code Copilot Chat, Cursor, Claude Code, Windsurf, JetBrains AI, or any terminal agent. The text includes error context, code, and the suggested diff.
 
 ---
 
@@ -149,3 +174,5 @@ log line arrives → pattern_matcher classifies (~0.1ms)
 | `OLLAMA_MODEL` | `llama3.2:3b` | Model to use with Ollama |
 | `ORQIS_BACKEND_URL` | `http://localhost:8000` | Backend URL (used by daemon) |
 | `ORQIS_DRAIN_TOKEN` | — | Auth token for `/drain` endpoint (leave unset for local dev) |
+| `ORQIS_ADMIN_TOKEN` | — | Protects incident mutations and settings; pass to MCP `env` and dashboard Settings |
+| `ORQIS_DEV_MODE` | `1` | Set `0` in production (enforces webhook signatures) |

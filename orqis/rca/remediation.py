@@ -40,11 +40,14 @@ def guard_runaway_loop(location: CodeLocation) -> Optional[str]:
     if not _HAS_LIBCST or not location.function_name:
         return None
 
-    try:
-        with open(location.file_path, "r", encoding="utf-8") as f:
-            original = f.read()
-    except OSError:
-        return None
+    if location.source_text is not None:
+        original = location.source_text
+    else:
+        try:
+            with open(location.file_path, "r", encoding="utf-8") as f:
+                original = f.read()
+        except OSError:
+            return None
 
     try:
         module = cst.parse_module(original)
@@ -65,7 +68,8 @@ def guard_runaway_loop(location: CodeLocation) -> Optional[str]:
     if patched == original:
         return None
 
-    return _unified_diff(location.file_path, original, patched)
+    header_path = location.repo_relative_path or location.file_path
+    return _unified_diff(header_path, original, patched)
 
 
 def _unique_name(source: str, base: str = "_attempts") -> str:

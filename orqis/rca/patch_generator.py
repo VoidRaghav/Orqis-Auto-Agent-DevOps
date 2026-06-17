@@ -164,11 +164,16 @@ def _diff_from_rewrite(raw: str, location: CodeLocation) -> Optional[str]:
     if not code.strip() or code.strip() == "NO_FIX":
         return None
 
-    try:
-        with open(location.file_path, "r", encoding="utf-8") as f:
-            original = f.read()
-    except OSError:
-        return None
+    # Prefer in-memory source (fetched from GitHub) so we never touch the local
+    # filesystem on the server path; fall back to disk read for local dev.
+    if location.source_text is not None:
+        original = location.source_text
+    else:
+        try:
+            with open(location.file_path, "r", encoding="utf-8") as f:
+                original = f.read()
+        except OSError:
+            return None
 
     orig_lines = original.splitlines()
     start = location.context_start_line - 1          # 0-indexed slice start
@@ -184,12 +189,15 @@ def _diff_from_rewrite(raw: str, location: CodeLocation) -> Optional[str]:
     if patched_lines == orig_lines:
         return None  # model returned the block unchanged
 
+    # Diff headers use the repo-relative path when available so the diff applies
+    # and commits cleanly through the GitHub API (R2).
+    header_path = location.repo_relative_path or location.file_path
     diff_lines = list(
         difflib.unified_diff(
             orig_lines,
             patched_lines,
-            fromfile=f"a/{location.file_path}",
-            tofile=f"b/{location.file_path}",
+            fromfile=f"a/{header_path}",
+            tofile=f"b/{header_path}",
             lineterm="",
         )
     )

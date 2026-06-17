@@ -21,15 +21,17 @@ Railway setup:
   Settings -> Log Drains -> Add Drain -> HTTP -> https://your-backend/drain?source=my-app
 """
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from .. import config
 from ..backend import store, ws_manager
-from ..backend.models import Incident, IncidentStatus, IngestRequest, InterpretationUpdate, LogEvent, TraceEvent
+from ..backend.models import ChangeLogEntry, Incident, IncidentStatus, IngestRequest, InterpretationUpdate, LogEvent, TraceEvent
 from ..daemon import log_reader, normalizer
 
 
@@ -44,7 +46,38 @@ async def lifespan(app: FastAPI):
             f"[orqis] cannot reach Redis at {config.REDIS_URL}: {e}\n"
             "Start Redis with:  redis-server  or  brew services start redis"
         ) from e
-    yield
+
+    if (
+        not config.DEV_MODE
+        and config.GITHUB_APP_ID
+        and not config.GITHUB_WEBHOOK_SECRET
+    ):
+        raise RuntimeError(
+            "[orqis] GITHUB_WEBHOOK_SECRET is required when ORQIS_DEV_MODE=0 "
+            "and GITHUB_APP_ID is set"
+        )
+
+    # Safety net: reconcile any incidents stuck in pr_open whose merge webhook
+    # was missed or misconfigured (U1/P4). Runs every 5 minutes.
+    poll_task = asyncio.create_task(_poll_open_prs_loop())
+    try:
+        yield
+    finally:
+        poll_task.cancel()
+
+
+async def _poll_open_prs_loop() -> None:
+    from ..integrations.github import webhooks
+
+    while True:
+        try:
+            await asyncio.sleep(300)
+            await webhooks.poll_open_prs()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            # Never let the reconciler crash the server loop.
+            pass
 
 
 def _check_drain_auth(request: Request) -> None:
@@ -58,6 +91,34 @@ def _check_drain_auth(request: Request) -> None:
     if auth.startswith("Bearer ") and auth[7:] == config.DRAIN_TOKEN:
         return
     raise HTTPException(status_code=401, detail="invalid or missing drain token")
+
+
+def _check_admin_auth(request: Request) -> None:
+    """
+    Guard settings mutations with ORQIS_ADMIN_TOKEN (S2). Accepts the token via
+    Authorization: Bearer <token> or X-Orqis-Admin-Token. Open in local dev when
+    the token is unset.
+    """
+    if not config.ADMIN_TOKEN:
+        return
+    header = request.headers.get("X-Orqis-Admin-Token", "")
+    if header == config.ADMIN_TOKEN:
+        return
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and auth[7:] == config.ADMIN_TOKEN:
+        return
+    raise HTTPException(status_code=401, detail="invalid or missing admin token")
+
+
+def _has_admin_auth(request: Request) -> bool:
+    """Return True when the request carries a valid admin token."""
+    if not config.ADMIN_TOKEN:
+        return config.DEV_MODE
+    try:
+        _check_admin_auth(request)
+        return True
+    except HTTPException:
+        return False
 
 
 app = FastAPI(title="Orqis", lifespan=lifespan)
@@ -317,6 +378,181 @@ async def sentry_webhook(request: Request):
     return {"ok": True}
 
 
+# --- GitHub App integration ---------------------------------------------------
+
+@app.get("/integrations/ide-setup")
+async def ide_setup():
+    """
+    Return copy-paste MCP configuration snippets for common IDEs and agents.
+    The protocol is the same everywhere: stdio JSON-RPC to `orqis mcp`.
+    """
+    backend = config.BACKEND_URL.rstrip("/")
+    base_args = ["mcp", "--backend-url", backend]
+    mcp_block = {
+        "command": "orqis",
+        "args": base_args,
+        "env": {"ORQIS_ADMIN_TOKEN": "<optional-if-set-on-backend>"},
+    }
+    return {
+        "backend_url": backend,
+        "mcp_command": "orqis mcp",
+        "note": (
+            "Same MCP server for every IDE — only the config file location differs. "
+            "Paste the fix prompt from the dashboard into any AI chat if you do not use MCP."
+        ),
+        "configs": {
+            "cursor_windsurf_claude_project": {"mcpServers": {"orqis": mcp_block}},
+            "vscode_user_settings": {
+                "mcp": {"servers": {"orqis": mcp_block}}
+            },
+            "stdio_only": {
+                "command": "orqis",
+                "args": base_args,
+            },
+        },
+        "ides": [
+            {"name": "Cursor", "config": "Project `.mcp.json` or Cursor Settings → MCP"},
+            {"name": "Windsurf", "config": "Project `.mcp.json`"},
+            {"name": "Claude Code", "config": "Project `.mcp.json` or `~/.claude/mcp.json`"},
+            {"name": "VS Code", "config": "Settings → MCP → add server (see vscode_user_settings)"},
+            {"name": "JetBrains / Zed / others", "config": "Add stdio MCP server pointing at `orqis mcp`"},
+            {"name": "Any editor", "config": "Dashboard → Copy for AI assistant → paste into chat"},
+        ],
+    }
+
+
+@app.get("/integrations/github/connect")
+async def github_connect():
+    """
+    Return the GitHub App install URL + current connection state for the
+    Settings page. The user clicks install_url, picks repos on GitHub, and the
+    `installation` webhook (and the callback below) records the installation.
+    """
+    from ..integrations.github import install_state
+
+    settings = await store.get_settings()
+    install_url = ""
+    if config.GITHUB_APP_SLUG:
+        state = install_state.create_state()
+        install_url = (
+            f"https://github.com/apps/{config.GITHUB_APP_SLUG}/installations/new"
+            f"?state={state}"
+        )
+    return {
+        "configured": bool(config.GITHUB_APP_ID and config.GITHUB_APP_SLUG),
+        "install_url": install_url,
+        "connected": bool(settings.get("installation_id")),
+        "account_login": settings.get("account_login"),
+        "repos": settings.get("repos", []),
+    }
+
+
+@app.get("/integrations/github/callback")
+async def github_callback(
+    request: Request,
+    installation_id: int = 0,
+    setup_action: str = "",
+    state: str = "",
+):
+    """
+    Post-install redirect target. GitHub sends installation_id + setup_action.
+    Requires a valid signed `state` from the install URL (C1).
+    """
+    from ..integrations.github import auth as gh_auth
+    from ..integrations.github import install_state
+
+    if not install_state.verify_state(state):
+        raise HTTPException(status_code=403, detail="invalid or expired install state")
+
+    if installation_id:
+        if gh_auth.is_configured():
+            token = await gh_auth.installation_token(installation_id)
+            if token is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="installation not accessible to this GitHub App",
+                )
+        repos = await gh_auth.list_installation_repos(installation_id)
+        await store.save_settings({"installation_id": installation_id, "repos": repos})
+        connect = await github_connect()
+        await ws_manager.manager.broadcast("settings.updated", connect)
+
+    dashboard = config.CORS_ORIGINS.split(",")[0].strip() or "http://localhost:3000"
+    return RedirectResponse(url=f"{dashboard}/settings?github=connected")
+
+
+@app.post("/integrations/github/webhook", status_code=202)
+async def github_webhook(request: Request):
+    """
+    Receive GitHub App webhooks: installation changes and pull_request merges.
+    Verifies the HMAC signature and dedups deliveries before dispatching.
+    """
+    from ..integrations.github import webhooks
+
+    raw = await request.body()
+    signature = request.headers.get("X-Hub-Signature-256")
+    if not webhooks.verify_signature(raw, signature, config.GITHUB_WEBHOOK_SECRET):
+        raise HTTPException(status_code=401, detail="invalid github signature")
+
+    delivery = request.headers.get("X-GitHub-Delivery", "")
+    if await store.delivery_seen(delivery):
+        return {"ok": True, "duplicate": True}
+
+    event = request.headers.get("X-GitHub-Event", "")
+    try:
+        payload = json.loads(raw or b"{}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="invalid json payload")
+
+    result = await webhooks.handle(event, payload)
+    return result
+
+
+# --- Workspace settings -------------------------------------------------------
+
+_SECRET_SETTING_KEYS = {"cursor_api_key"}  # never echoed back
+
+
+@app.get("/settings")
+async def get_settings():
+    """
+    Return workspace settings for the dashboard. Secret-bearing fields are never
+    included in the response.
+    """
+    settings = await store.get_settings()
+    return {k: v for k, v in settings.items() if k not in _SECRET_SETTING_KEYS}
+
+
+@app.put("/settings")
+async def update_settings(request: Request):
+    """
+    Update workspace settings (source->repo map, toggles, hot-reload URL).
+    Guarded by ORQIS_ADMIN_TOKEN (S2). Validates the hot-reload URL is HTTPS and
+    not an internal address before storing.
+    """
+    _check_admin_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid json body")
+
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="settings body must be an object")
+
+    url = body.get("hot_reload_webhook_url")
+    if url:
+        from ..integrations.github import pr_service
+
+        if not pr_service._safe_callback_url(url):
+            raise HTTPException(
+                status_code=400,
+                detail="hot_reload_webhook_url must be HTTPS and not an internal address",
+            )
+
+    updated = await store.save_settings(body)
+    return {k: v for k, v in updated.items() if k not in _SECRET_SETTING_KEYS}
+
+
 @app.post("/demo/reset")
 async def demo_reset(clear: bool = False):
     """
@@ -350,6 +586,15 @@ async def get_incidents(limit: int = 50):
     return await store.get_recent_incidents(limit=min(limit, 200))
 
 
+@app.get("/changes", response_model=list[ChangeLogEntry])
+async def get_changes(request: Request, limit: int = 100):
+    """Return the change log. Full diffs require admin auth (H6)."""
+    entries = await store.get_recent_changes(limit=min(limit, 200))
+    if _has_admin_auth(request):
+        return entries
+    return [e.model_copy(update={"diff": None}) for e in entries]
+
+
 @app.get("/incidents/{incident_id}", response_model=Incident)
 async def get_incident(incident_id: str):
     incident = await store.get_incident(incident_id)
@@ -359,20 +604,30 @@ async def get_incident(incident_id: str):
 
 
 @app.post("/incidents/{incident_id}/approve")
-async def approve_incident(incident_id: str, force: bool = False):
+async def approve_incident(request: Request, incident_id: str, force: bool = False):
     """
     Apply the generated patch to disk and mark the incident as approved.
     This is the only endpoint that writes to the filesystem.
 
     Normally requires PATCHED status. LOW_CONFIDENCE incidents are blocked
     unless ?force=true is set — a human is signing off on a risky patch.
+
+    For GitHub-connected incidents this local-disk path is disabled: the fix is
+    delivered as a reviewable PR instead (merge it on GitHub).
     """
-    import os
+    _check_admin_auth(request)
     from ..rca.applier import apply
 
     incident = await store.get_incident(incident_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="incident not found")
+
+    # GitHub PR-first: never write to disk for a repo-mapped incident (U3).
+    if incident.repo_full_name:
+        detail = "incident is delivered as a GitHub PR — review and merge it there"
+        if incident.pr_url:
+            detail += f": {incident.pr_url}"
+        raise HTTPException(status_code=409, detail=detail)
 
     allowed = (IncidentStatus.PATCHED,)
     if force:
@@ -388,8 +643,9 @@ async def approve_incident(incident_id: str, force: bool = False):
     if not incident.diff:
         raise HTTPException(status_code=409, detail="no diff available to apply")
 
-    project_root = os.getcwd()
-    success, reason = apply(incident.diff, project_root)
+    # Use the configured project root, captured at startup, so a changed backend
+    # cwd can't misdirect the patch.
+    success, reason = apply(incident.diff, config.PROJECT_ROOT)
 
     if not success:
         raise HTTPException(status_code=422, detail=f"patch failed: {reason}")
@@ -400,57 +656,119 @@ async def approve_incident(incident_id: str, force: bool = False):
     await ws_manager.manager.broadcast(
         "incident.approved", updated.model_dump(mode="json")
     )
+    from . import changelog
+
+    short = (updated.repo_relative_path or updated.file_path or "the file")
+    await changelog.record(
+        "fix_applied",
+        updated,
+        f"Applied fix to {short.replace(chr(92), '/').split('/')[-1]}",
+        applied_locally=True,
+        local_path=incident.file_path,
+    )
     return {"ok": True, "file": incident.file_path}
 
 
 @app.post("/incidents/{incident_id}/dismiss")
-async def dismiss_incident(incident_id: str):
-    """Mark the incident as dismissed — no patch applied."""
+async def dismiss_incident(request: Request, incident_id: str):
+    """
+    Mark the incident as dismissed — no patch applied. If a fix PR was opened,
+    close it and clean up its branch (G4/O2).
+    """
+    _check_admin_auth(request)
     incident = await store.get_incident(incident_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="incident not found")
 
+    # Close any open PR on GitHub before dismissing.
+    if incident.pr_number and incident.repo_full_name:
+        from ..integrations.github import pr_service
+
+        await pr_service.close_pr_for_incident(incident)
+
     updated = await store.update_incident(
         incident_id, status=IncidentStatus.DISMISSED.value
     )
+    # Re-arm the rolling TTL now that the incident is terminal (P1).
+    await store.set_incident_ttl(incident_id)
     await ws_manager.manager.broadcast(
         "incident.dismissed", updated.model_dump(mode="json")
     )
+    from . import changelog
+
+    await changelog.record("dismissed", updated, "Dismissed — no change made")
+    return {"ok": True}
+
+
+@app.post("/incidents/{incident_id}/open-pr")
+async def open_pr(request: Request, incident_id: str):
+    """
+    Manually open (or retry) a fix PR for an incident — used for the dashboard
+    "Open PR" action on low-confidence incidents and the retry button on
+    pr_failed / patch_stale.
+    """
+    _check_admin_auth(request)
+    from ..integrations.github import auth as gh_auth
+    from ..integrations.github import pr_service
+
+    incident = await store.get_incident(incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="incident not found")
+    if not gh_auth.is_configured():
+        raise HTTPException(status_code=409, detail="GitHub App is not configured")
+    if not incident.repo_full_name:
+        raise HTTPException(
+            status_code=409,
+            detail="incident has no mapped repo — map source -> repo in Settings",
+        )
+    if not incident.diff:
+        raise HTTPException(status_code=409, detail="no diff available to open a PR")
+
+    asyncio.create_task(pr_service.open_fix_pr(incident))
+    return {"ok": True, "status": "opening"}
+
+
+@app.post("/incidents/{incident_id}/resolve")
+async def resolve_incident(request: Request, incident_id: str):
+    """
+    Manual "Mark resolved" override for when a PR was merged but the webhook was
+    missed (U1).
+    """
+    _check_admin_auth(request)
+    from ..integrations.github import pr_service
+
+    incident = await store.get_incident(incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="incident not found")
+
+    if incident.pr_number and incident.repo_full_name:
+        await pr_service.mark_resolved(incident_id, incident.repo_full_name, incident.pr_number)
+    else:
+        updated = await store.update_incident(
+            incident_id, status=IncidentStatus.RESOLVED.value
+        )
+        await store.set_incident_ttl(incident_id)
+        await ws_manager.manager.broadcast(
+            "incident.resolved", updated.model_dump(mode="json")
+        )
+        from . import changelog
+
+        await changelog.record("resolved", updated, "Marked resolved")
     return {"ok": True}
 
 
 @app.get("/incidents/{incident_id}/prompt")
 async def get_incident_prompt(incident_id: str):
     """
-    Return a ready-to-paste prompt for any AI coding assistant (Cursor, Claude Code, etc.).
-    The frontend team can render this as a copy button on the incident card.
+    Return a ready-to-paste prompt for any AI coding assistant in any IDE.
     """
+    from ..rca.ide_prompt import build_fix_prompt
+
     incident = await store.get_incident(incident_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="incident not found")
 
-    lines = [
-        "Orqis detected a production error in your codebase.",
-        "",
-        f"Error: {incident.error_message}",
-    ]
-    if incident.interpretation:
-        lines.append(f"Plain English: {incident.interpretation}")
-    if incident.file_path and incident.error_line:
-        lines.append(f"Location: {incident.file_path}:{incident.error_line}")
-    if incident.function_name:
-        lines.append(f"Function: {incident.function_name}")
-    if incident.code_context:
-        lines.append(f"\nCode context (line {incident.context_start_line}):")
-        lines.append(f"```python\n{incident.code_context}\n```")
-    if incident.diff:
-        lines.append("\nOrqis suggested fix (unified diff):")
-        lines.append(f"```diff\n{incident.diff}\n```")
-        lines.append("\nPlease review and apply this fix if it looks correct.")
-    else:
-        lines.append("\nNo automated fix was generated. Please investigate and fix manually.")
-
-    return {"prompt": "\n".join(lines)}
+    return {"prompt": build_fix_prompt(incident)}
 
 
 # --- WebSocket ----------------------------------------------------------------

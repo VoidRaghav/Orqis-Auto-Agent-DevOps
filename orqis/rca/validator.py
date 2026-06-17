@@ -57,8 +57,15 @@ class ValidationResult:
         return self
 
 
-async def validate(diff: str, file_path: str) -> ValidationResult:
-    """Run every gate. Never raises."""
+async def validate(
+    diff: str, file_path: str, source_text: Optional[str] = None
+) -> ValidationResult:
+    """
+    Run every gate. Never raises.
+
+    source_text, when provided, is the in-memory source the diff applies to
+    (fetched from GitHub). When None, the source is read from disk (local dev).
+    """
     result = ValidationResult(valid=True)
 
     if not diff or not diff.strip():
@@ -71,15 +78,20 @@ async def validate(diff: str, file_path: str) -> ValidationResult:
     if not hunks:
         return result.fail("no parseable hunks in diff")
 
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            original = f.read()
-    except OSError as e:
-        return result.fail(f"cannot read source: {e}")
+    if source_text is not None:
+        original = source_text
+    else:
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                original = f.read()
+        except OSError as e:
+            return result.fail(f"cannot read source: {e}")
 
     try:
-        patched = _apply(original, hunks)
-    except _PatchError as e:
+        from .diff_engine import apply_to_text, DiffApplyError
+
+        patched = apply_to_text(original, diff)
+    except DiffApplyError as e:
         return result.fail(str(e))
 
     result.patched_source = patched
@@ -132,63 +144,10 @@ def _parse_hunks(diff: str) -> list[Hunk]:
     return hunks
 
 
-# ─────────────────────────── diff applier ───────────────────────────
+# ─────────────────────────── diff applier (delegates to diff_engine) ──────────
 
-class _PatchError(Exception):
-    pass
-
-
-def _apply(source: str, hunks: list[Hunk]) -> str:
-    """
-    Apply hunks. Verifies every context (' ') and removed ('-') line matches
-    the source — if the LLM hallucinated a removed line, this raises.
-    """
-    src = source.splitlines()
-    out: list[str] = []
-    idx = 0  # 0-indexed cursor into src
-
-    for (old_start, _old_count, _new_start, _new_count, body) in hunks:
-        target = old_start - 1
-        if target < idx:
-            raise _PatchError(f"hunks out of order at line {old_start}")
-        if target > len(src):
-            raise _PatchError(f"hunk start line {old_start} past end of file")
-
-        out.extend(src[idx:target])
-        idx = target
-
-        for line in body:
-            if not line:
-                continue
-            tag = line[0]
-            payload = line[1:]
-
-            if tag == " ":
-                if idx >= len(src) or src[idx] != payload:
-                    raise _PatchError(
-                        f"context mismatch at line {idx + 1}: "
-                        f"expected {payload!r}, file has "
-                        f"{src[idx] if idx < len(src) else '<EOF>'!r}"
-                    )
-                out.append(payload)
-                idx += 1
-            elif tag == "-":
-                if idx >= len(src) or src[idx] != payload:
-                    raise _PatchError(
-                        f"hallucinated removal at line {idx + 1}: "
-                        f"diff says {payload!r}, file has "
-                        f"{src[idx] if idx < len(src) else '<EOF>'!r}"
-                    )
-                idx += 1
-            elif tag == "+":
-                out.append(payload)
-            # '\' (no-newline marker) — ignore
-
-    out.extend(src[idx:])
-    return "\n".join(out) + ("\n" if source.endswith("\n") else "")
-
-
-# ─────────────────────────── gates ───────────────────────────
+# Legacy helpers kept for structural parsing in validate(); application uses
+# orqis.rca.diff_engine.apply_to_text (H1).
 
 def _check_syntax(source: str) -> Optional[str]:
     if _HAS_LIBCST:
