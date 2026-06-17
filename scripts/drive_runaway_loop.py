@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 import httpx
 
 BACKEND = os.getenv("ORQIS_BACKEND_URL", "http://localhost:8000")
-REPO = r"C:\Users\siddu\.cursor\projects\empty-window\Orqis-Auto-Agent-DevOps\e2e-workspace"
+# Resolve the test repo relative to this script so the path is portable.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.getenv("ORQIS_E2E_REPO", os.path.join(_ROOT, "e2e-workspace"))
 LOOP_FILE = os.path.join(REPO, "refund_agent.py")
 CODE_LOCATION = f"{LOOP_FILE}:21:resolve_refund"
 SOURCE = "refund-agent"
