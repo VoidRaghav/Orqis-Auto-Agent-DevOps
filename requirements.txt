@@ -6,3 +6,7 @@ redis[hiredis]>=5.2.0
 httpx>=0.28.0
 pydantic>=2.10.0
 python-dotenv>=1.0.0
+libcst>=1.1.0
+ruff>=0.5.0
+PyJWT>=2.8.0
+cryptography>=42.0.0

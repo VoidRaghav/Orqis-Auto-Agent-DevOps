@@ -110,10 +110,16 @@ class TraceEvent(BaseModel):
 
 class IncidentStatus(str, Enum):
     OPEN            = "open"             # detected, patch not yet generated
+    PATCHING        = "patching"         # LLM patch generation in flight
     PATCHED         = "patched"          # diff validated, awaiting approval
     LOW_CONFIDENCE  = "low_confidence"   # diff generated but failed verification
-    APPROVED        = "approved"         # patch applied to disk
+    APPROVED        = "approved"         # patch applied to disk (local dev path)
     DISMISSED       = "dismissed"        # human dismissed — no action taken
+    # --- GitHub PR-first lifecycle ---
+    PR_OPEN         = "pr_open"          # fix PR opened on GitHub, awaiting merge
+    PR_FAILED       = "pr_failed"        # PR creation failed (retryable)
+    PATCH_STALE     = "patch_stale"      # diff no longer applies to default-branch HEAD
+    RESOLVED        = "resolved"         # PR merged — fix is in, awaiting deploy
 
 
 class ValidationStatus(str, Enum):
@@ -121,6 +127,32 @@ class ValidationStatus(str, Enum):
     PASSED         = "passed"
     FAILED         = "failed"
     LOW_CONFIDENCE = "low_confidence"
+
+
+class ChangeLogEntry(BaseModel):
+    """
+    An auditable record of something Orqis changed — written to the dashboard
+    "CHANGES" feed and (for local applies) reflecting an actual file edit.
+
+    One entry is created whenever a fix is applied locally, a fix PR is opened,
+    a PR is merged/resolved, or an incident is dismissed.
+    """
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: datetime
+    # "fix_applied" | "pr_opened" | "pr_merged" | "resolved" | "dismissed"
+    # | "pr_failed" | "patch_stale"
+    action: str
+    incident_id: str
+    summary: str                              # human-readable one-liner
+    file: Optional[str] = None                # path that changed (relative when known)
+    # True when the change was written to the local working copy on disk.
+    applied_locally: bool = False
+    local_path: Optional[str] = None          # absolute path edited on disk
+    repo_full_name: Optional[str] = None
+    pr_url: Optional[str] = None
+    pr_number: Optional[int] = None
+    error_type: Optional[ErrorType] = None
+    diff: Optional[str] = None
 
 
 class Incident(BaseModel):
@@ -158,3 +190,24 @@ class Incident(BaseModel):
     source: str = "unknown"
     # How many times this exact error has fired (dedup counter)
     hit_count: int = 1
+
+    # --- GitHub PR-first integration fields ---
+    # How the patch was produced: "deterministic" (libcst remediation, correct by
+    # construction) or "llm" (model rewrite). Auto-merge is gated on this.
+    fix_method: Optional[str] = None
+    # Repo-relative path of the file the fix touches (e.g. "demo/service.py"),
+    # distinct from file_path which may be a deploy-absolute path like /app/demo/service.py.
+    repo_relative_path: Optional[str] = None
+    # Target repo + base branch the PR is opened against.
+    repo_full_name: Optional[str] = None      # "owner/repo"
+    base_branch: Optional[str] = None
+    base_sha: Optional[str] = None
+    # PR metadata once opened.
+    branch_name: Optional[str] = None
+    pr_number: Optional[int] = None
+    pr_url: Optional[str] = None
+    pr_error: Optional[str] = None            # reason PR creation/staleness failed
+    # Money recovered by stopping a runaway loop — shown in the PR title.
+    cost_recovered_usd: Optional[float] = None
+    # Set when the PR merges.
+    resolved_at: Optional[datetime] = None

@@ -18,6 +18,15 @@ build/
 # Redis dump
 dump.rdb
 
+# Secrets — GitHub App private keys, generated env, setup state
+secrets/
+
+# Local E2E test repo clone (its own git repo)
+e2e-workspace/
+
+# Runtime logs
+*.log
+
 # macOS
 .DS_Store
 

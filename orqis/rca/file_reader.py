@@ -31,7 +31,15 @@ _FRAME_RE = re.compile(
 
 
 class CodeLocation:
-    __slots__ = ("file_path", "line", "function_name", "context", "context_start_line")
+    __slots__ = (
+        "file_path",
+        "line",
+        "function_name",
+        "context",
+        "context_start_line",
+        "source_text",
+        "repo_relative_path",
+    )
 
     def __init__(
         self,
@@ -40,12 +48,20 @@ class CodeLocation:
         function_name: Optional[str],
         context: str,
         context_start_line: int,
+        source_text: Optional[str] = None,
+        repo_relative_path: Optional[str] = None,
     ):
         self.file_path = file_path
         self.line = line
         self.function_name = function_name
         self.context = context          # source text sent to the LLM
         self.context_start_line = context_start_line  # line number of context[0]
+        # Full file contents. Set when the source was fetched from GitHub instead
+        # of read from disk, so downstream patch/validate steps never touch the
+        # local filesystem. None for the local-dev path (read on demand).
+        self.source_text = source_text
+        # Repo-relative path used for diff headers + the Git tree path (R2).
+        self.repo_relative_path = repo_relative_path
 
 
 def extract(error_text: str, project_root: Optional[str] = None) -> Optional[CodeLocation]:
@@ -111,18 +127,41 @@ def _parse_frames(text: str) -> list[tuple[str, int]]:
     ]
 
 
+def parse_frames(text: str) -> list[tuple[str, int]]:
+    """
+    Public traceback frame parser — returns (file_path, line) pairs in
+    traceback order (outermost first, innermost last). Used by source_resolver
+    to walk frames against the GitHub repo tree.
+    """
+    return _parse_frames(text)
+
+
 def _read_context(file_path: str, error_line: int) -> Optional[CodeLocation]:
     """
-    Read the source file and extract the function that contains error_line.
-    Falls back to a fixed window around the line if AST parsing fails.
+    Read the source file from disk and extract the function containing
+    error_line. Used by the local-dev path. Returns None if unreadable.
     """
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             source = f.read()
-            all_lines = source.splitlines()
     except OSError:
         return None
+    return location_from_source(source, file_path, error_line)
 
+
+def location_from_source(
+    source: str,
+    file_path: str,
+    error_line: int,
+    repo_relative_path: Optional[str] = None,
+) -> Optional[CodeLocation]:
+    """
+    Build a CodeLocation from in-memory source text (used by source_resolver
+    when the file was fetched from GitHub). Identical context extraction to the
+    local path, but carries the full source_text + repo_relative_path so the
+    patch/validate steps never read the filesystem.
+    """
+    all_lines = source.splitlines()
     function_name, start, end = _find_function_bounds(source, error_line)
 
     # Clamp to MAX_CONTEXT_LINES centred on the error line
@@ -140,6 +179,8 @@ def _read_context(file_path: str, error_line: int) -> Optional[CodeLocation]:
         function_name=function_name,
         context=context,
         context_start_line=start + 1,  # 1-indexed
+        source_text=source,
+        repo_relative_path=repo_relative_path,
     )
 
 

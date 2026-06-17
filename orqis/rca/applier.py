@@ -122,57 +122,25 @@ def _apply_with_patch_binary(diff: str, target_path: str) -> tuple[bool, str]:
 
 def _apply_manually(diff: str, target_path: str) -> tuple[bool, str]:
     """
-    Minimal manual unified diff applier for environments without `patch`.
-    Handles simple single-file diffs with one or more hunks.
+    Apply a unified diff to disk using the shared diff_engine (H1).
+    Preserves the file's native line-ending style on write.
     """
+    from .diff_engine import DiffApplyError, apply_to_text
+
     try:
-        with open(target_path, "r", encoding="utf-8") as f:
-            original = f.readlines()
+        with open(target_path, "r", encoding="utf-8", newline="") as f:
+            raw = f.read()
     except OSError as e:
         return False, f"could not read file: {e}"
 
-    result = original[:]
-    offset = 0  # line offset accumulated from previous hunks
-
-    for hunk_diff, old_start, old_count in _parse_hunks(diff):
-        start = old_start - 1 + offset  # 0-indexed
-
-        # Verify the context matches
-        old_lines = [l[1:] for l in hunk_diff if l.startswith(" ") or l.startswith("-")]
-        actual = result[start: start + len(old_lines)]
-        if [l.rstrip("\n") for l in actual] != [l.rstrip("\n") for l in old_lines]:
-            return False, f"hunk at line {old_start} does not match source"
-
-        new_lines = [l[1:] for l in hunk_diff if l.startswith(" ") or l.startswith("+")]
-        result[start: start + len(old_lines)] = new_lines
-        offset += len(new_lines) - len(old_lines)
+    try:
+        out = apply_to_text(raw, diff)
+    except DiffApplyError as e:
+        return False, str(e)
 
     try:
-        with open(target_path, "w", encoding="utf-8") as f:
-            f.writelines(result)
+        with open(target_path, "w", encoding="utf-8", newline="") as f:
+            f.write(out)
         return True, ""
     except OSError as e:
         return False, f"could not write file: {e}"
-
-
-_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@")
-
-
-def _parse_hunks(diff: str):
-    """Yield (hunk_lines, old_start, old_count) for each hunk in the diff."""
-    lines = diff.splitlines()
-    i = 0
-    while i < len(lines):
-        m = _HUNK_HEADER.match(lines[i])
-        if m:
-            old_start = int(m.group(1))
-            old_count = int(m.group(2)) if m.group(2) is not None else 1
-            i += 1
-            hunk = []
-            while i < len(lines) and not _HUNK_HEADER.match(lines[i]):
-                if not lines[i].startswith("---") and not lines[i].startswith("+++"):
-                    hunk.append(lines[i])
-                i += 1
-            yield hunk, old_start, old_count
-        else:
-            i += 1

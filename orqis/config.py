@@ -49,3 +49,37 @@ CORS_ORIGINS: str = os.getenv(
 # Found in Sentry: Settings -> Developer Settings -> your integration -> Client Secret.
 # If empty, signature verification is skipped (fine for local dev, not production).
 SENTRY_WEBHOOK_SECRET: str = os.getenv("ORQIS_SENTRY_SECRET", "")
+
+# --- GitHub App integration ---------------------------------------------------
+# Orqis opens fix PRs through a GitHub App the user installs on their repos.
+# Create the app at: GitHub -> Settings -> Developer settings -> GitHub Apps.
+# Permissions: Contents (read/write), Pull requests (write), Metadata (read).
+# Subscribe to events: installation, installation_repositories, pull_request.
+GITHUB_APP_ID: str = os.getenv("GITHUB_APP_ID", "")
+
+# The app's PEM private key. Accept either the raw PEM contents (GITHUB_APP_PRIVATE_KEY,
+# with literal \n escapes allowed) or a path to the .pem file (GITHUB_APP_PRIVATE_KEY_PATH).
+GITHUB_APP_PRIVATE_KEY: str = os.getenv("GITHUB_APP_PRIVATE_KEY", "").replace("\\n", "\n")
+GITHUB_APP_PRIVATE_KEY_PATH: str = os.getenv("GITHUB_APP_PRIVATE_KEY_PATH", "")
+
+# Webhook shared secret — verifies the X-Hub-Signature-256 header on deliveries.
+GITHUB_WEBHOOK_SECRET: str = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+
+# The app's URL slug — used to build the install URL https://github.com/apps/<slug>/installations/new
+GITHUB_APP_SLUG: str = os.getenv("GITHUB_APP_SLUG", "")
+
+# Public base URL of this Orqis backend (for webhook + post-install redirect links).
+PUBLIC_URL: str = os.getenv("ORQIS_PUBLIC_URL", "http://localhost:8000")
+
+# Admin token guarding settings mutations (PUT /settings/*). If empty, settings
+# writes are open (fine for local dev only — set this in production).
+ADMIN_TOKEN: str = os.getenv("ORQIS_ADMIN_TOKEN", "")
+
+# Secret used to HMAC-sign outbound hot-reload callbacks so the user's app can
+# verify the payload genuinely came from Orqis.
+RELOAD_SECRET: str = os.getenv("ORQIS_RELOAD_SECRET", "")
+
+# When false, security-sensitive endpoints reject unauthenticated requests even if
+# ORQIS_ADMIN_TOKEN is unset, and GitHub webhooks require GITHUB_WEBHOOK_SECRET.
+# Default true for local dev; set ORQIS_DEV_MODE=0 in production.
+DEV_MODE: bool = os.getenv("ORQIS_DEV_MODE", "1").lower() in ("1", "true", "yes")

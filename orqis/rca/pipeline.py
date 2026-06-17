@@ -18,6 +18,7 @@ Deduplication:
 
 import asyncio
 import hashlib
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Optional
@@ -26,13 +27,27 @@ from .. import config
 from ..backend import store, ws_manager
 from ..backend.models import ErrorType, Incident, IncidentStatus, ValidationStatus
 from ..daemon.interpreter import fallback, interpret
-from ..rca import confidence, file_reader, patch_generator, remediation, validator
+from ..integrations.github import auth as gh_auth
+from ..integrations.github import pr_service
+from ..rca import (
+    confidence,
+    file_reader,
+    patch_generator,
+    remediation,
+    source_resolver,
+    validator,
+)
 
 # How long (seconds) an incident fingerprint blocks duplicate RCA runs
 DEDUP_WINDOW_SECONDS = 300  # 5 minutes
 
-# fingerprint -> (incident_id, created_at_unix_ts)
-_recent: dict[str, tuple[str, float]] = {}
+# Statuses that should NOT collapse a fresh error into the existing incident —
+# the prior incident is finished, so a recurrence is a genuinely new one (I4).
+_TERMINAL_FOR_DEDUP = (
+    IncidentStatus.APPROVED,
+    IncidentStatus.DISMISSED,
+    IncidentStatus.RESOLVED,
+)
 
 # Serialises concurrent fingerprint check-and-set so two simultaneous triggers
 # for the same error can't both miss the dedup table and create twin incidents.
@@ -45,16 +60,111 @@ def _fingerprint(error_message: str) -> str:
     return hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()
 
 
-def _dedup_lookup(fp: str) -> Optional[str]:
-    """Return the incident_id if this fingerprint is still within the window."""
-    entry = _recent.get(fp)
-    if entry is None:
+async def _dedup_bump(fp: str) -> Optional[Incident]:
+    """
+    If this fingerprint maps to a still-active incident, bump its hit count and
+    return it (caller should short-circuit). Returns None when there's no live
+    incident to collapse into and a new one should be created (I4).
+    """
+    existing_id = await store.dedup_get(fp)
+    if not existing_id:
         return None
-    iid, ts = entry
-    if (datetime.now(timezone.utc).timestamp() - ts) < DEDUP_WINDOW_SECONDS:
-        return iid
-    del _recent[fp]
-    return None
+    existing = await store.get_incident(existing_id)
+    if existing is None or existing.status in _TERMINAL_FOR_DEDUP:
+        return None
+    hit_count = (existing.hit_count or 1) + 1
+    updated = await store.update_incident(existing_id, hit_count=hit_count)
+    if updated:
+        await _broadcast("incident.updated", updated)
+    return existing
+
+
+async def _locate(error_message: str, source: str, root: str):
+    """
+    Locate the failing code. Tries the GitHub repo first (works on a server with
+    no local checkout); falls back to the local filesystem for dev. Returns
+    (location, resolved) where resolved is a ResolvedSource or None.
+    """
+    resolved = await source_resolver.resolve(error_message, source)
+    if resolved is not None:
+        return resolved.location, resolved
+    location = file_reader.extract(error_message, project_root=root)
+    return location, None
+
+
+def _located_fields(location, resolved) -> dict:
+    """Build the incident update dict for a located code position."""
+    fields = dict(
+        file_path=location.file_path,
+        error_line=location.line,
+        function_name=location.function_name,
+        code_context=location.context,
+        context_start_line=location.context_start_line,
+        repo_relative_path=location.repo_relative_path,
+    )
+    if resolved is not None:
+        fields.update(
+            repo_full_name=resolved.repo_full_name,
+            base_branch=resolved.base_branch,
+            base_sha=resolved.base_sha,
+        )
+    return fields
+
+
+async def _finalize_patch(
+    incident: Incident, diff: str, location, fix_method: str
+) -> Incident:
+    """
+    Validate the diff, score confidence, persist the patch, broadcast, and
+    schedule an auto-PR when eligible. Deterministic fixes get a confidence
+    floor so a correct-by-construction libcst patch is never demoted (R3).
+    """
+    result = await validator.validate(
+        diff, location.file_path, source_text=location.source_text
+    )
+    conf = confidence.score(diff, location, result)
+
+    if result.valid and (fix_method == "deterministic" or conf >= confidence.THRESHOLD):
+        status, vstatus = IncidentStatus.PATCHED.value, ValidationStatus.PASSED.value
+    elif result.valid:
+        status, vstatus = IncidentStatus.LOW_CONFIDENCE.value, ValidationStatus.LOW_CONFIDENCE.value
+    else:
+        status, vstatus = IncidentStatus.LOW_CONFIDENCE.value, ValidationStatus.FAILED.value
+
+    incident = await store.update_incident(
+        incident.id,
+        diff=diff,
+        status=status,
+        validation_status=vstatus,
+        confidence=conf,
+        fix_method=fix_method,
+        validation_errors=result.errors,
+        validation_warnings=result.warnings,
+    )
+    await _broadcast("incident.patched", incident)
+    await _maybe_open_pr(incident)
+    return incident
+
+
+async def _maybe_open_pr(incident: Optional[Incident]) -> None:
+    """
+    Schedule an async auto-PR when the incident is PATCHED, mapped to a GitHub
+    repo, and the app is configured. LOW_CONFIDENCE only auto-PRs when the
+    workspace opted in via pr_low_confidence (S1).
+    """
+    if incident is None or not incident.repo_full_name:
+        return
+    if not gh_auth.is_configured():
+        return
+
+    if incident.status == IncidentStatus.PATCHED:
+        asyncio.create_task(pr_service.open_fix_pr(incident))
+        return
+
+    if incident.status == IncidentStatus.LOW_CONFIDENCE:
+        settings = await store.get_settings()
+        if settings.get("pr_low_confidence"):
+            asyncio.create_task(pr_service.open_fix_pr(incident))
 
 
 async def trigger(
@@ -77,20 +187,12 @@ async def trigger(
     # --- Atomic dedup check-and-create -------------------------------------
     # Hold the lock across the lookup AND the new-incident save so two
     # concurrent triggers for the same fingerprint can't both miss the
-    # table and create twin incidents.
+    # table and create twin incidents. Dedup state lives in Redis (P5) so it
+    # survives restarts and is shared across workers.
     async with _dedup_lock:
-        existing_id = _dedup_lookup(fp)
-        if existing_id:
-            existing = await store.get_incident(existing_id)
-            if existing and existing.status not in (
-                IncidentStatus.APPROVED,
-                IncidentStatus.DISMISSED,
-            ):
-                hit_count = (existing.hit_count or 1) + 1
-                updated = await store.update_incident(existing_id, hit_count=hit_count)
-                if updated:
-                    await _broadcast("incident.updated", updated)
-                return existing
+        existing = await _dedup_bump(fp)
+        if existing is not None:
+            return existing
 
         incident = Incident(
             created_at=datetime.now(timezone.utc),
@@ -103,7 +205,7 @@ async def trigger(
             hit_count=1,
         )
         await store.save_incident(incident)
-        _recent[fp] = (incident.id, incident.created_at.timestamp())
+        await store.dedup_set(fp, incident.id, DEDUP_WINDOW_SECONDS)
 
     await _broadcast("incident.created", incident)
 
@@ -112,23 +214,18 @@ async def trigger(
         _update_interpretation(incident.id, error_message, error_type)
     )
 
-    # Locate failing code in traceback
-    location = file_reader.extract(error_message, project_root=root)
+    # Locate failing code — GitHub repo first (server), local disk as fallback.
+    location, resolved = await _locate(error_message, source, root)
     if location is None:
         print(
             f"\033[33m[orqis] could not locate source for incident "
-            f"{incident.id} — checked under project_root={root}\033[0m",
+            f"{incident.id} — checked GitHub repo + project_root={root}\033[0m",
             file=sys.stderr,
         )
         return incident
 
     incident = await store.update_incident(
-        incident.id,
-        file_path=location.file_path,
-        error_line=location.line,
-        function_name=location.function_name,
-        code_context=location.context,
-        context_start_line=location.context_start_line,
+        incident.id, **_located_fields(location, resolved)
     )
     await _broadcast("incident.located", incident)
 
@@ -137,31 +234,7 @@ async def trigger(
     if diff is None:
         return incident
 
-    # Run verification gates before exposing the patch
-    result = await validator.validate(diff, location.file_path)
-    conf = confidence.score(diff, location, result)
-
-    if result.valid and conf >= confidence.THRESHOLD:
-        status  = IncidentStatus.PATCHED.value
-        vstatus = ValidationStatus.PASSED.value
-    elif result.valid:
-        status  = IncidentStatus.LOW_CONFIDENCE.value
-        vstatus = ValidationStatus.LOW_CONFIDENCE.value
-    else:
-        status  = IncidentStatus.LOW_CONFIDENCE.value
-        vstatus = ValidationStatus.FAILED.value
-
-    incident = await store.update_incident(
-        incident.id,
-        diff=diff,
-        status=status,
-        validation_status=vstatus,
-        confidence=conf,
-        validation_errors=result.errors,
-        validation_warnings=result.warnings,
-    )
-    await _broadcast("incident.patched", incident)
-    return incident
+    return await _finalize_patch(incident, diff, location, fix_method="llm")
 
 
 async def trigger_anomaly(signal) -> Optional[Incident]:
@@ -181,18 +254,9 @@ async def trigger_anomaly(signal) -> Optional[Incident]:
     )
 
     async with _dedup_lock:
-        existing_id = _dedup_lookup(fp)
-        if existing_id:
-            existing = await store.get_incident(existing_id)
-            if existing and existing.status not in (
-                IncidentStatus.APPROVED,
-                IncidentStatus.DISMISSED,
-            ):
-                hit_count = (existing.hit_count or 1) + 1
-                updated = await store.update_incident(existing_id, hit_count=hit_count)
-                if updated:
-                    await _broadcast("incident.updated", updated)
-                return existing
+        existing = await _dedup_bump(fp)
+        if existing is not None:
+            return existing
 
         incident = Incident(
             created_at=datetime.now(timezone.utc),
@@ -203,9 +267,11 @@ async def trigger_anomaly(signal) -> Optional[Incident]:
             interpretation=fallback(ErrorType.RUNAWAY_LOOP),
             source=signal.source,
             hit_count=1,
+            # Money this fix recovers — surfaced in the PR title (A8).
+            cost_recovered_usd=round(signal.cost_usd, 2) if signal.cost_usd else None,
         )
         await store.save_incident(incident)
-        _recent[fp] = (incident.id, incident.created_at.timestamp())
+        await store.dedup_set(fp, incident.id, DEDUP_WINDOW_SECONDS)
 
     await _broadcast("incident.created", incident)
 
@@ -213,67 +279,52 @@ async def trigger_anomaly(signal) -> Optional[Incident]:
     if file_path is None:
         return incident
 
-    location = file_reader.read_at(file_path, line, project_root=config.PROJECT_ROOT)
+    # GitHub repo first (server path), then local disk (dev).
+    resolved = await source_resolver.resolve_file(signal.source, file_path, line)
+    if resolved is not None:
+        location = resolved.location
+    else:
+        location = file_reader.read_at(file_path, line, project_root=config.PROJECT_ROOT)
     if location is None:
         print(
             f"\033[33m[orqis] runaway loop located at {signal.code_location} but "
-            f"source unreadable under project_root={config.PROJECT_ROOT}\033[0m",
+            f"source unreadable (GitHub repo + project_root={config.PROJECT_ROOT})\033[0m",
             file=sys.stderr,
         )
         return incident
 
     incident = await store.update_incident(
-        incident.id,
-        file_path=location.file_path,
-        error_line=location.line,
-        function_name=location.function_name,
-        code_context=location.context,
-        context_start_line=location.context_start_line,
+        incident.id, **_located_fields(location, resolved)
     )
     await _broadcast("incident.located", incident)
 
     # Known failure class: apply the verified bounded-retry remediation first.
     # Fall back to the LLM only if the loop shape isn't one we can template.
     diff = remediation.guard_runaway_loop(location)
+    fix_method = "deterministic"
     if diff is None:
         diff = await patch_generator.generate(message, location, kind="loop")
+        fix_method = "llm"
     if diff is None:
         return incident
 
-    result = await validator.validate(diff, location.file_path)
-    conf = confidence.score(diff, location, result)
-
-    if result.valid and conf >= confidence.THRESHOLD:
-        status, vstatus = IncidentStatus.PATCHED.value, ValidationStatus.PASSED.value
-    elif result.valid:
-        status, vstatus = IncidentStatus.LOW_CONFIDENCE.value, ValidationStatus.LOW_CONFIDENCE.value
-    else:
-        status, vstatus = IncidentStatus.LOW_CONFIDENCE.value, ValidationStatus.FAILED.value
-
-    incident = await store.update_incident(
-        incident.id,
-        diff=diff,
-        status=status,
-        validation_status=vstatus,
-        confidence=conf,
-        validation_errors=result.errors,
-        validation_warnings=result.warnings,
-    )
-    await _broadcast("incident.patched", incident)
-    return incident
+    return await _finalize_patch(incident, diff, location, fix_method=fix_method)
 
 
 def _parse_code_location(loc: Optional[str]) -> tuple[Optional[str], int]:
-    """Split a 'file.py:line:function' marker into (file_path, line)."""
+    """
+    Split a 'file:line:function' marker into (file_path, line).
+
+    Parses the trailing ':line' (with an optional ':function' after it) from the
+    right so the file portion is preserved intact — including Windows drive
+    colons (C:\\...) and any other colons in the path.
+    """
     if not loc:
         return None, 0
-    parts = loc.split(":")
-    if len(parts) < 2:
+    m = re.search(r":(\d+)(?::[^:]*)?$", loc)
+    if not m:
         return None, 0
-    try:
-        return parts[0], int(parts[1])
-    except ValueError:
-        return None, 0
+    return loc[: m.start()], int(m.group(1))
 
 
 async def _update_interpretation(
