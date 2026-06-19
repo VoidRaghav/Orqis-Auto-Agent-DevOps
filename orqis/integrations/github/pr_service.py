@@ -231,7 +231,6 @@ async def open_fix_pr(incident: Incident) -> None:
         repo,
         pr_number,
         status=IncidentStatus.PR_OPEN.value,
-        pr_number=pr_number,
         pr_url=pr_url,
         branch_name=branch,
         base_branch=base_branch,

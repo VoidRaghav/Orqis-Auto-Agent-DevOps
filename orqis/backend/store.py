@@ -304,6 +304,9 @@ async def finalize_pr_open(
         if not raw:
             return None
         data = json.loads(raw)
+        # The positional pr_number is the single source of truth — persist it on
+        # the incident too (callers pass it once, here).
+        fields.setdefault("pr_number", pr_number)
         data.update(fields)
         updated = Incident(**data)
         pipe = r.pipeline(transaction=True)
