@@ -2,20 +2,23 @@
   "name": "orqis",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "lint": "eslint src --ext ts,tsx"
   },
   "dependencies": {
     "@splinetool/react-spline": "^2.2.6",
     "@splinetool/runtime": "^1.12.94",
     "gsap": "^3.12.5",
     "lenis": "^1.1.14",
-    "next": "14.2.3",
+    "lucide-react": "^0.525.0",
+    "motion": "^12.40.0",
     "react": "^18",
     "react-dom": "^18",
+    "react-router-dom": "^7.6.3",
     "recharts": "^2.12.7",
     "three": "^0.163.0"
   },
@@ -24,11 +27,12 @@
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "@types/three": "^0.163.0",
+    "@vitejs/plugin-react": "^4.6.0",
     "autoprefixer": "^10.4.19",
     "eslint": "^8",
-    "eslint-config-next": "14.2.3",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite": "^7.0.0"
   }
 }
