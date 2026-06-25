@@ -5,7 +5,7 @@ import { useOrqisStream } from "@/lib/useOrqisStream";
 import { API_URL, WS_URL } from "@/lib/env";
 import { C, ACTIVE_STATUSES } from "@/dashboard/constants";
 import { mono } from "@/dashboard/shared";
-import TopBar from "@/dashboard/components/TopBar";
+import DashboardNav from "@/dashboard/components/DashboardNav";
 import HealthHero from "@/dashboard/components/HealthHero";
 import KpiStrip from "@/dashboard/components/KpiStrip";
 import LogRow from "@/dashboard/components/LogRow";
@@ -13,6 +13,8 @@ import IncidentCard from "@/dashboard/components/IncidentCard";
 import ChangeRow from "@/dashboard/components/ChangeRow";
 import TraceRow from "@/dashboard/components/TraceRow";
 import RightRail from "@/dashboard/components/RightRail";
+import OpsAmbientLayer from "@/dashboard/components/OpsAmbientLayer";
+import { resolveOpsMood } from "@/dashboard/components/ops-ambient";
 import { EmptyState } from "@/dashboard/components/ui";
 
 export default function Dashboard() {
@@ -61,117 +63,91 @@ export default function Dashboard() {
   }, []);
 
   const tabs = [
-    { id: "incidents", label: "ISSUES & FIXES", badge: openCount > 0 ? openCount : null },
-    { id: "changes", label: "CHANGES", badge: changes.length > 0 ? changes.length : null },
-    { id: "logs", label: "ACTIVITY", badge: null },
-    { id: "traces", label: "AI CALLS", badge: null },
+    { id: "incidents", label: "Issues", badge: openCount > 0 ? openCount : null },
+    { id: "changes", label: "Changes", badge: changes.length > 0 ? changes.length : null },
+    { id: "logs", label: "Activity", badge: null },
+    { id: "traces", label: "AI calls", badge: null },
   ] as const;
 
   const hasPrChanges = changes.some((c) => c.action === "pr_opened" || c.action === "pr_merged");
+  const alertCount = incidents.filter(
+    (i) =>
+      i.status === "patched" ||
+      i.status === "low_confidence" ||
+      i.status === "pr_open" ||
+      i.status === "pr_failed" ||
+      i.status === "patch_stale" ||
+      i.status === "open" ||
+      i.status === "patching",
+  ).length;
+  const mood = resolveOpsMood({
+    connected,
+    hasData: incidents.length > 0 || changes.length > 0 || events.length > 0,
+    alertCount,
+  });
 
   return (
-    <div
-      className="terminal-grid"
-      style={{
-        background: C.bg,
-        minHeight: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        fontFamily: "'DM Mono', monospace",
-      }}
-    >
-      <TopBar connected={connected} totalCost={totalCost} github={github} />
+    <div className="dashboard-page" data-mood={mood}>
+      <OpsAmbientLayer mood={mood} />
+      <div className="ops-page-content">
+      <DashboardNav connected={connected} totalCost={totalCost} github={github} />
 
-      <HealthHero
-        incidents={incidents}
-        connected={connected}
-        hasChanges={changes.length > 0}
-        onViewIssues={() => setActiveTab("incidents")}
-      />
+      <div className="dashboard-toolbar">
+        <HealthHero
+          incidents={incidents}
+          connected={connected}
+          hasChanges={changes.length > 0}
+          onViewIssues={() => setActiveTab("incidents")}
+        />
+        <KpiStrip events={events} incidents={incidents} />
+      </div>
 
-      <KpiStrip events={events} incidents={incidents} connected={connected} />
-
-      <div className="dashboard-main" style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-            borderRight: `1px solid ${C.border}`,
-            minWidth: 0,
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              gap: 0,
-              borderBottom: `1px solid ${C.border}`,
-              background: C.bg2,
-              flexShrink: 0,
-              overflowX: "auto",
-            }}
-          >
+      <div className="ops-terminal-frame corner-brackets">
+        <div className="ops-terminal-frame-edge" />
+        <div className="dashboard-body">
+        <div className="dashboard-main">
+          <div className="dashboard-tabs">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`mc-tab ${activeTab === tab.id ? "mc-tab-active" : ""} ${
-                  tab.id === "changes" && hasPrChanges && activeTab === "changes" ? "mc-tab-pr" : ""
+                className={`dashboard-tab ${activeTab === tab.id ? "dashboard-tab-active" : ""} ${
+                  tab.id === "changes" && hasPrChanges && activeTab === "changes" ? "dashboard-tab-pr" : ""
                 }`}
-                style={{ display: "flex", alignItems: "center", gap: 8 }}
               >
                 {tab.label}
-                {tab.badge != null && (
-                  <span
-                    style={{
-                      background: C.red,
-                      color: C.white,
-                      borderRadius: 10,
-                      padding: "1px 6px",
-                      fontSize: 9,
-                      fontWeight: 700,
-                    }}
-                  >
-                    {tab.badge}
-                  </span>
-                )}
+                {tab.badge != null && <span className="dashboard-tab-badge">{tab.badge}</span>}
               </button>
             ))}
-
             {activeTab === "logs" && (
               <button
+                type="button"
                 onClick={() => setAutoScroll((x) => !x)}
-                style={{
-                  ...mono,
-                  marginLeft: "auto",
-                  padding: "10px 16px",
-                  fontSize: 9,
-                  color: autoScroll ? C.green : C.dim,
-                  background: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  letterSpacing: "0.08em",
-                }}
+                className="dashboard-autoscroll-btn"
+                style={{ ...mono, color: autoScroll ? C.green : C.dim }}
               >
-                {autoScroll ? "⬆ AUTO" : "PAUSED"}
+                {autoScroll ? "Auto-scroll" : "Paused"}
               </button>
             )}
           </div>
 
-          <div ref={logRef} style={{ flex: 1, overflowY: "auto" }}>
+          <div ref={logRef} className="dashboard-main-scroll">
             {activeTab === "logs" &&
               (events.length === 0 ? (
-                <EmptyState label="Waiting for log events…" />
+                <EmptyState label="No activity yet." hint="Add orqis.init() →" />
               ) : (
                 events.map((e) => <LogRow key={e.id} event={e} flash={flashSet.current.has(e.id)} />)
               ))}
 
             {activeTab === "incidents" && (
-              <div style={{ padding: 14 }}>
+              <div className="dashboard-incidents">
                 {incidents.length === 0 ? (
-                  <EmptyState label="No problems found. Your app is healthy." />
+                  <EmptyState
+                    hero
+                    label="No open incidents yet."
+                    hint="Connect GitHub for auto-fix PRs →"
+                  />
                 ) : (
                   incidents.map((i) => (
                     <IncidentCard
@@ -191,19 +167,10 @@ export default function Dashboard() {
 
             {activeTab === "changes" &&
               (changes.length === 0 ? (
-                <EmptyState label="No changes yet." hint="Connect GitHub in Settings →" />
+                <EmptyState label="No changes yet." hint="Connect GitHub →" />
               ) : (
-                <div style={{ padding: 14, position: "relative" }}>
-                  <div
-                    style={{
-                      position: "absolute",
-                      left: 26,
-                      top: 20,
-                      bottom: 20,
-                      width: 2,
-                      background: `linear-gradient(180deg, ${C.github}40, ${C.green}40)`,
-                    }}
-                  />
+                <div className="dashboard-changes">
+                  <div className="dashboard-changes-spine" />
                   {changes.map((c) => (
                     <ChangeRow key={c.id} change={c} onViewIncident={viewIncidentFromChange} />
                   ))}
@@ -212,7 +179,7 @@ export default function Dashboard() {
 
             {activeTab === "traces" &&
               (traces.length === 0 ? (
-                <EmptyState label="No trace events yet. Add orqis.init() to your app." />
+                <EmptyState label="No AI calls yet." hint="orqis.init() instruments LLMs" />
               ) : (
                 traces.map((t) => <TraceRow key={t.id} trace={t} />)
               ))}
@@ -220,6 +187,8 @@ export default function Dashboard() {
         </div>
 
         <RightRail events={events} traces={traces} />
+        </div>
+      </div>
       </div>
     </div>
   );
