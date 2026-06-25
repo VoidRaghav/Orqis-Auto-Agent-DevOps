@@ -79,7 +79,7 @@ const CHARTS = [
 
 const TT_STYLE = {
   contentStyle: { background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontFamily: "DM Mono", fontSize: 11 },
-  labelStyle: { color: "#666" },
+  labelStyle: { color: "#b6c7be" },
 };
 
 export default function AnalyticsSection() {
@@ -92,7 +92,7 @@ export default function AnalyticsSection() {
             className="editorial-headline"
             style={{ fontSize: "clamp(2.5rem, 5vw, 4.5rem)", color: colors.white, marginTop: 8 }}
           >
-            OBSERVE <em>and</em> //
+            OBSERVE <em>and</em>
             <br />
             <span style={{ color: colors.green }}>AUTO-FIX.</span>
           </h2>
@@ -112,7 +112,7 @@ export default function AnalyticsSection() {
             }}>
               <div style={{ marginBottom: 20 }}>
                 <div style={{ ...mono, fontSize: 11, color: "#ffffff", marginBottom: 4 }}>{c.title}</div>
-                <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#444" }}>{c.sub}</div>
+                <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#8fa39a" }}>{c.sub}</div>
               </div>
               <ResponsiveContainer width="100%" height={160}>
                 {c.chart === "area" ? (
@@ -124,8 +124,8 @@ export default function AnalyticsSection() {
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-                    <XAxis dataKey="day" tick={{ fontSize: 9, fill: "#444", fontFamily: "DM Mono" }} axisLine={false} tickLine={false} interval={4} />
-                    <YAxis tick={{ fontSize: 9, fill: "#444", fontFamily: "DM Mono" }} axisLine={false} tickLine={false} tickFormatter={c.format} width={36} />
+                    <XAxis dataKey="day" tick={{ fontSize: 9, fill: "#8fa39a", fontFamily: "DM Mono" }} axisLine={false} tickLine={false} interval={4} />
+                    <YAxis tick={{ fontSize: 9, fill: "#8fa39a", fontFamily: "DM Mono" }} axisLine={false} tickLine={false} tickFormatter={c.format} width={36} />
                     <Tooltip {...TT_STYLE} itemStyle={{ color: c.color }} formatter={(v: any) => [c.format!(v), ""]} />
                     {c.refLine && <ReferenceLine x={`D${c.refLine}`} stroke="#00ff88" strokeDasharray="4 4" label={{ value: "orqis on", fill: "#00ff88", fontSize: 9, fontFamily: "DM Mono" }} />}
                     <Area type="monotone" dataKey={c.key!} stroke={c.color} strokeWidth={1.5} fill={`url(#g${i})`} dot={false} />
@@ -133,7 +133,7 @@ export default function AnalyticsSection() {
                 ) : c.chart === "bar" ? (
                   <BarChart data={c.data} barGap={2}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-                    <XAxis dataKey="day" tick={{ fontSize: 9, fill: "#444", fontFamily: "DM Mono" }} axisLine={false} tickLine={false} interval={1} />
+                    <XAxis dataKey="day" tick={{ fontSize: 9, fill: "#8fa39a", fontFamily: "DM Mono" }} axisLine={false} tickLine={false} interval={1} />
                     <YAxis hide />
                     <Tooltip {...TT_STYLE} />
                     <Bar dataKey="ok"   stackId="a" fill="#00ff88" radius={[0,0,0,0]} />
@@ -142,8 +142,8 @@ export default function AnalyticsSection() {
                 ) : (
                   <LineChart data={c.data}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-                    <XAxis dataKey="day" tick={{ fontSize: 9, fill: "#444", fontFamily: "DM Mono" }} axisLine={false} tickLine={false} interval={4} />
-                    <YAxis tick={{ fontSize: 9, fill: "#444", fontFamily: "DM Mono" }} axisLine={false} tickLine={false} tickFormatter={c.format} width={36} />
+                    <XAxis dataKey="day" tick={{ fontSize: 9, fill: "#8fa39a", fontFamily: "DM Mono" }} axisLine={false} tickLine={false} interval={4} />
+                    <YAxis tick={{ fontSize: 9, fill: "#8fa39a", fontFamily: "DM Mono" }} axisLine={false} tickLine={false} tickFormatter={c.format} width={36} />
                     <Tooltip {...TT_STYLE} itemStyle={{ color: c.color }} formatter={(v: any) => [c.format!(v), ""]} />
                     {c.refLine && <ReferenceLine x={`D${c.refLine}`} stroke="#00ff88" strokeDasharray="4 4" label={{ value: "orqis on", fill: "#00ff88", fontSize: 9, fontFamily: "DM Mono" }} />}
                     <Line type="monotone" dataKey={c.key!} stroke={c.color} strokeWidth={1.5} dot={false} />

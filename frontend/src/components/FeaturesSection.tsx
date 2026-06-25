@@ -215,14 +215,13 @@ export default function FeaturesSection() {
       <div ref={wrapperRef} className="flow-features-scroll">
         <div ref={stickyRef} className="flow-features-stage">
           <div ref={introRef} className="flow-features-intro flow-section-headline">
-            <SectionMeta index="002" tag="(HOW_IT_WORKS)" />
             <h2
               className="editorial-headline"
               style={{ fontSize: "clamp(2rem, 4.5vw, 3.8rem)", color: colors.white, marginTop: 8 }}
             >
               DETECT. PATCH.
               <br />
-              <em>review.</em> // <span style={{ color: colors.green }}>SHIP.</span>
+              <em>review.</em> <span style={{ color: colors.green }}>SHIP.</span>
             </h2>
           </div>
           <FlowSectionOverlay accent={activeAccent} side="left" />
@@ -270,9 +269,6 @@ export default function FeaturesSection() {
                   borderRadius: 16,
                 }}
               >
-                <MetaLabel accent={panel.accent} style={{ display: "block", marginBottom: 20 }}>
-                  [{panel.num} / 05]
-                </MetaLabel>
                 <h3
                   style={{
                     fontFamily: fonts.anton,

@@ -26,6 +26,9 @@ export default function SmoothScrollProvider({
     });
 
     lenisRef.current = lenis;
+    // Expose the instance so in-page anchors (Nav) can scroll through Lenis
+    // instead of fighting it with native window.scrollTo.
+    (window as unknown as { __lenis?: Lenis }).__lenis = lenis;
 
     lenis.on("scroll", (e: { velocity: number }) => {
       ScrollTrigger.update();
@@ -71,6 +74,7 @@ export default function SmoothScrollProvider({
       ScrollTrigger.removeEventListener("refresh", () => lenis.resize());
       ScrollTrigger.scrollerProxy(document.body, {});
       lenis.destroy();
+      delete (window as unknown as { __lenis?: Lenis }).__lenis;
       gsap.ticker.remove(tickerFn);
     };
   }, []);

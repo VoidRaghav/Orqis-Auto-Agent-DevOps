@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import MetaLabel from "@/components/ui/MetaLabel";
 import { registerPanel, unregisterPanel } from "@/lib/panel-registry";
+import { colors } from "@/lib/tokens";
 
 type Props = {
   id: string;
@@ -45,7 +46,7 @@ export default function FloatingOpsPanel({
   return (
     <div
       ref={ref}
-      className={`floating-ops-panel glass corner-brackets animate-float ${className}`}
+      className={`floating-ops-panel glass animate-float ${className}`}
       style={{
         top,
         right,
@@ -55,7 +56,7 @@ export default function FloatingOpsPanel({
       }}
       aria-hidden
     >
-      <MetaLabel accent="#333333" style={{ display: "block", marginBottom: 6 }}>
+      <MetaLabel accent={colors.muted} style={{ display: "block", marginBottom: 6 }}>
         ({label})
       </MetaLabel>
       <div className="hero-card-row">

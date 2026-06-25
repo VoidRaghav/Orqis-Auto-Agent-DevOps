@@ -87,17 +87,10 @@ export default function FooterCTA() {
           >
             NEXT INCIDENT?
             <br />
-            <em>already</em> //
+            <em>already</em>
             <br />
             <span style={{ color: colors.green }}>HAS A PR.</span>
           </h2>
-
-          <p style={{
-            ...inter, fontSize: "clamp(1rem, 1.5vw, 1.15rem)",
-            color: colors.muted, marginBottom: 40, maxWidth: 520, margin: "0 auto 40px",
-          }}>
-            Detect runaway loops, ship a verified patch as a GitHub PR or local apply — full CHANGES audit included.
-          </p>
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "center", marginBottom: 48 }}>
             <a href="/settings" className="btn-ghost" style={{
@@ -132,13 +125,7 @@ export default function FooterCTA() {
 
             {/* Brand */}
             <div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                <div style={{
-                  width: 24, height: 24, borderRadius: 6,
-                  background: "#00ff88", display: "flex", alignItems: "center", justifyContent: "center",
-                }}>
-                  <span style={{ fontFamily: "'Anton', sans-serif", fontSize: 11, color: "#000000" }}>O</span>
-                </div>
+              <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
                 <span style={{ fontFamily: "'Anton', sans-serif", fontSize: 18, color: "#ffffff", letterSpacing: "0.05em" }}>ORQIS</span>
               </div>
               <p style={{ ...inter, fontSize: 13, color: colors.muted, lineHeight: 1.7, maxWidth: 260 }}>
@@ -148,11 +135,11 @@ export default function FooterCTA() {
                 {["𝕏", "GitHub", "Discord"].map((social) => (
                   <a key={social} href="#" style={{
                     fontFamily: "'DM Mono', monospace", fontSize: 12,
-                    color: "#555555", textDecoration: "none",
+                    color: "#9fb1a8", textDecoration: "none",
                     transition: "color 0.15s",
                   }}
                   onMouseEnter={e => (e.currentTarget.style.color = "#ffffff")}
-                  onMouseLeave={e => (e.currentTarget.style.color = "#555555")}
+                  onMouseLeave={e => (e.currentTarget.style.color = "#9fb1a8")}
                   >
                     {social}
                   </a>
@@ -169,7 +156,7 @@ export default function FooterCTA() {
               <div key={col.title}>
                 <h4 style={{
                   fontFamily: "'DM Mono', monospace", fontSize: 10,
-                  color: "#444444", letterSpacing: "0.2em",
+                  color: "#8fa39a", letterSpacing: "0.2em",
                   textTransform: "uppercase", marginBottom: 16,
                 }}>
                   {col.title}
@@ -179,11 +166,11 @@ export default function FooterCTA() {
                     <li key={link}>
                       <a href="#" style={{
                         fontFamily: "'Inter', sans-serif", fontSize: 13,
-                        color: "#555555", textDecoration: "none",
+                        color: "#9fb1a8", textDecoration: "none",
                         transition: "color 0.15s",
                       }}
                       onMouseEnter={e => (e.currentTarget.style.color = "#ffffff")}
-                      onMouseLeave={e => (e.currentTarget.style.color = "#555555")}
+                      onMouseLeave={e => (e.currentTarget.style.color = "#9fb1a8")}
                       >
                         {link}
                       </a>
@@ -201,18 +188,18 @@ export default function FooterCTA() {
             display: "flex", flexWrap: "wrap",
             alignItems: "center", justifyContent: "space-between", gap: 16,
           }}>
-            <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#333333" }}>
-              © 2025 Orqis, Inc. All rights reserved.
+            <p style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#9aaca3" }}>
+              © 2026 Orqis, Inc. All rights reserved.
             </p>
             <div style={{ display: "flex", gap: 24 }}>
               {["Privacy Policy", "Terms of Service", "Cookie Policy"].map((link) => (
                 <a key={link} href="#" style={{
                   fontFamily: "'DM Mono', monospace", fontSize: 11,
-                  color: "#333333", textDecoration: "none",
+                  color: "#9aaca3", textDecoration: "none",
                   transition: "color 0.15s",
                 }}
                 onMouseEnter={e => (e.currentTarget.style.color = "#ffffff")}
-                onMouseLeave={e => (e.currentTarget.style.color = "#333333")}
+                onMouseLeave={e => (e.currentTarget.style.color = "#9aaca3")}
                 >
                   {link}
                 </a>

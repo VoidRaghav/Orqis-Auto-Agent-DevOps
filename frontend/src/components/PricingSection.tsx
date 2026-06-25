@@ -64,7 +64,7 @@ export default function PricingSection() {
             <br />
             <span style={{ color: colors.green }}>NO SEAT TAX.</span>
           </h2>
-          <p style={{ ...inter, fontSize: 16, color: "#666", marginTop: 16 }}>
+          <p style={{ ...inter, fontSize: 16, color: "#b6c7be", marginTop: 16 }}>
             Pay for the time you save, not the seats you fill.
           </p>
 
@@ -81,7 +81,7 @@ export default function PricingSection() {
                 ...mono, fontSize: 12,
                 background: (annual ? label === "Annual" : label === "Monthly")
                   ? "#ffffff" : "transparent",
-                color: (annual ? label === "Annual" : label === "Monthly") ? "#000" : "#666",
+                color: (annual ? label === "Annual" : label === "Monthly") ? "#000" : "#9fb1a8",
                 transition: "all 0.2s",
               }}>
                 {label} {label === "Annual" && <span style={{ color: "#00ff88", marginLeft: 4 }}>-20%</span>}
@@ -117,15 +117,15 @@ export default function PricingSection() {
                 <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginBottom: 8 }}>
                   <span style={{
                     fontFamily: "'Anton', sans-serif", fontSize: 48,
-                    color: plan.highlight ? "#000" : plan.name === "Team" ? "#ffffff" : "#666",
+                    color: plan.highlight ? "#000" : plan.name === "Team" ? "#ffffff" : "#b6c7be",
                   }}>
                     ${annual ? plan.price.yr : plan.price.mo}
                   </span>
                   {plan.price.mo > 0 && (
-                    <span style={{ ...mono, fontSize: 12, color: plan.highlight ? "#666" : "#444" }}>/mo</span>
+                    <span style={{ ...mono, fontSize: 12, color: plan.highlight ? "#666" : "#9aaca3" }}>/mo</span>
                   )}
                 </div>
-                <p style={{ ...inter, fontSize: 13, color: plan.highlight ? "#444" : "#666" }}>{plan.desc}</p>
+                <p style={{ ...inter, fontSize: 13, color: plan.highlight ? "#444" : "#b6c7be" }}>{plan.desc}</p>
               </div>
 
               <a href={plan.href} className={plan.highlight ? "btn-primary" : "btn-ghost"} style={{
@@ -141,7 +141,7 @@ export default function PricingSection() {
                 {plan.features.map((f) => (
                   <div key={f} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                     <span style={{ color: "#00ff88", fontSize: 13, flexShrink: 0, marginTop: 1 }}>✓</span>
-                    <span style={{ ...inter, fontSize: 13, color: plan.highlight ? "#444" : "#666" }}>{f}</span>
+                    <span style={{ ...inter, fontSize: 13, color: plan.highlight ? "#444" : "#b6c7be" }}>{f}</span>
                   </div>
                 ))}
               </div>
