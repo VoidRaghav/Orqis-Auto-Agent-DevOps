@@ -5,10 +5,23 @@ import MetaLabel from "@/components/ui/MetaLabel";
 import { colors, fonts } from "@/lib/tokens";
 
 const LINKS = [
-  { label: "How it works", href: "#how-it-works" },
-  { label: "Mission control", href: "#mission-control" },
-  { label: "Pricing", href: "#pricing" },
+  // `enter` is the fraction of a pinned section's scroll to land on, so the nav
+  // lands on revealed content instead of the section's empty intro beat.
+  { label: "How it works", href: "#how-it-works", enter: 0.075 },
+  { label: "Mission control", href: "#mission-control", enter: 0 },
+  { label: "Pricing", href: "#pricing", enter: 0 },
 ];
+
+function scrollToSection(href: string, enter: number) {
+  const el = document.getElementById(href.slice(1));
+  if (!el) return;
+  const lenis = (window as unknown as { __lenis?: { scroll: number; scrollTo: (t: number) => void } }).__lenis;
+  const current = lenis ? lenis.scroll : window.scrollY;
+  const top = el.getBoundingClientRect().top + current;
+  const target = top + enter * Math.max(0, el.offsetHeight - window.innerHeight);
+  if (lenis) lenis.scrollTo(target);
+  else window.scrollTo({ top: target, behavior: "smooth" });
+}
 
 export default function Nav() {
   const navRef = useRef<HTMLElement>(null);
@@ -59,6 +72,10 @@ export default function Nav() {
           <a
             key={l.label}
             href={l.href}
+            onClick={(e) => {
+              e.preventDefault();
+              scrollToSection(l.href, l.enter);
+            }}
             style={{
               padding: "6px 14px",
               fontSize: 11,
@@ -81,29 +98,24 @@ export default function Nav() {
         <Link
           to="/dashboard"
           style={{
-            padding: "7px 16px",
-            fontSize: 10,
+            padding: "9px 20px",
+            fontSize: 11,
             color: colors.green,
             textDecoration: "none",
             fontFamily: fonts.mono,
-            letterSpacing: "0.12em",
+            letterSpacing: "0.14em",
             textTransform: "uppercase",
             border: `1px solid ${colors.green}33`,
             display: "inline-flex",
             alignItems: "center",
-            gap: 6,
           }}
         >
-          <span
-            className="pulse-slow"
-            style={{ width: 5, height: 5, borderRadius: "50%", background: colors.green, display: "inline-block" }}
-          />
           Dashboard
         </Link>
         <Link
           to="/settings"
           className="btn-ghost"
-          style={{ padding: "8px 18px", textDecoration: "none", display: "inline-flex", alignItems: "center" }}
+          style={{ padding: "9px 20px", fontSize: 11, textDecoration: "none", display: "inline-flex", alignItems: "center" }}
         >
           Connect →
         </Link>

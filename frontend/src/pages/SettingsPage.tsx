@@ -421,7 +421,7 @@ function RepoSelect({
         background: C.bg,
         border: `1px solid ${C.border}`,
         borderRadius: 6,
-        color: value ? "#ddd" : "#666",
+        color: value ? "#ddd" : "#9fb1a8",
         fontSize: 12,
         padding: "9px 11px",
         outline: "none",

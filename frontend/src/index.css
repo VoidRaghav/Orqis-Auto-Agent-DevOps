@@ -188,7 +188,7 @@ body::before {
 
 .code-keyword  { color: #00e87a; }
 .code-string   { color: #e8a050; }
-.code-comment  { color: #4a4038; }
+.code-comment  { color: #6e7d72; }
 .code-function { color: var(--text); }
 .code-error    { color: #ff3d5a; }
 .code-ok       { color: #00e87a; }
@@ -824,7 +824,7 @@ body::before {
 
 /* â”€â”€ CINEMATIC HERO (scroll-driven) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .cinematic-hero-scroll {
-  height: 250vh;
+  height: 185vh;
   position: relative;
 }
 
@@ -1041,9 +1041,10 @@ body::before {
 .cinematic-hero-sub {
   margin-bottom: 32px;
   font-family: 'DM Mono', monospace;
-  font-size: clamp(0.72rem, 0.9vw, 0.88rem);
+  font-size: clamp(0.76rem, 0.95vw, 0.92rem);
+  font-weight: 500;
   line-height: 1.9;
-  color: #666666;
+  color: #c2cfc8;
   max-width: 420px;
   letter-spacing: 0.04em;
 }
@@ -1056,11 +1057,11 @@ body::before {
 }
 
 .cinematic-hero-btn {
-  padding: 14px 28px;
+  padding: 16px 34px;
   text-decoration: none;
   display: inline-flex;
   align-items: center;
-  font-size: 11px;
+  font-size: 13px;
   border-radius: 0;
 }
 
@@ -1076,14 +1077,15 @@ body::before {
   gap: 8px;
   font-family: 'DM Mono', monospace;
   font-size: 10px;
-  color: #222222;
+  font-weight: 600;
+  color: #9fb1a8;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .cinematic-hero-stat span:first-child {
   font-size: 16px;
-  font-weight: 500;
+  font-weight: 700;
 }
 
 .cinematic-hero-ops {
@@ -1099,9 +1101,10 @@ body::before {
   max-width: 200px;
   font-family: 'DM Mono', monospace;
   font-size: 9px;
+  font-weight: 600;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: #333333;
+  color: #93a59c;
   text-align: right;
 }
 
@@ -1285,9 +1288,10 @@ body::before {
 .hero-sub {
   margin-bottom: 40px;
   font-family: 'DM Mono', monospace;
-  font-size: clamp(0.72rem, 0.9vw, 0.88rem);
+  font-size: clamp(0.76rem, 0.95vw, 0.92rem);
+  font-weight: 500;
   line-height: 1.9;
-  color: #666666;
+  color: #c2cfc8;
   max-width: 420px;
   letter-spacing: 0.04em;
 }
@@ -1353,7 +1357,8 @@ body::before {
 
 .hero-stat span:last-child {
   font-size: 10px;
-  color: #222222;
+  font-weight: 600;
+  color: #9fb1a8;
   letter-spacing: 0.12em;
 }
 
@@ -1393,11 +1398,13 @@ body::before {
 
 .hero-card-row span:first-child {
   font-size: 11px;
+  font-weight: 700;
   letter-spacing: 0.06em;
 }
 
 .hero-card-row span:last-child {
-  color: #333333;
+  color: #aebcb4;
+  font-weight: 500;
 }
 
 .hero-scroll-hint {
@@ -1673,7 +1680,8 @@ body::before {
 .orqis-hero-quote-sm {
   font-size: 12px;
   line-height: 1.6;
-  color: #666666;
+  font-weight: 500;
+  color: #c2cfc8;
   margin-bottom: 16px;
   font-family: 'DM Mono', monospace;
 }
@@ -1722,7 +1730,8 @@ body::before {
   gap: 8px;
   font-family: 'DM Mono', monospace;
   font-size: 10px;
-  color: #222222;
+  font-weight: 600;
+  color: #9fb1a8;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }

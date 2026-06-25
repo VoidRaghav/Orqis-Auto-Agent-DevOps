@@ -22,7 +22,7 @@ export default function TerminalPanel({
 }: Props) {
   return (
     <div
-      className={`corner-brackets terminal-panel ${className}`}
+      className={`terminal-panel ${className}`}
       style={{
         background: colors.bg3,
         border: `1px solid ${colors.border}`,

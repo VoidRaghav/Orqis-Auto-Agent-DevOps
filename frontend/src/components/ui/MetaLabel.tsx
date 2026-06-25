@@ -25,21 +25,12 @@ export default function MetaLabel({ children, style, accent = colors.muted }: Pr
   );
 }
 
-export function SectionMeta({
-  index,
-  total = "05",
-  tag,
-}: {
-  index: string;
+// Section tag/number chrome removed from the marketing sections — kept as a
+// no-op so existing call sites don't need to change.
+export function SectionMeta(_props: {
+  index?: string;
   total?: string;
   tag?: string;
 }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 24 }}>
-      {tag && <MetaLabel accent={colors.glow}>{tag}</MetaLabel>}
-      <MetaLabel accent={colors.dimmer}>
-        [{index} / {total}]
-      </MetaLabel>
-    </div>
-  );
+  return null;
 }

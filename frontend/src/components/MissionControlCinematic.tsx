@@ -153,7 +153,7 @@ export default function MissionControlCinematic() {
 
       <div
         ref={shellRef}
-        className="mc-cinematic-shell corner-brackets"
+        className="mc-cinematic-shell"
         onMouseEnter={() => setPaused(true)}
         onMouseLeave={() => {
           setPaused(false);
@@ -166,6 +166,7 @@ export default function MissionControlCinematic() {
           zIndex: 8,
           background: colors.bg2,
           border: `1px solid ${colors.borderStrong}`,
+          borderRadius: 18,
           overflow: "hidden",
           opacity: reducedMotion ? 1 : 0,
           transform: reducedMotion ? "none" : "perspective(1200px) rotateX(4deg)",
@@ -211,9 +212,9 @@ export default function MissionControlCinematic() {
               key={k.label}
               style={{
                 padding: "10px 16px",
-                borderRadius: 8,
-                border: `1px solid ${k.accent}33`,
-                background: `${k.accent}0a`,
+                borderRadius: 10,
+                border: `1px solid ${colors.border}`,
+                background: colors.bg3,
                 minWidth: 120,
               }}
             >
@@ -270,7 +271,7 @@ export default function MissionControlCinematic() {
             <div style={{ display: "grid", gridTemplateColumns: "1fr min(280px, 32%)", gap: 16 }}>
               <div
                 style={{
-                  border: `1px solid ${accentColor(chapter.accent)}44`,
+                  border: `1px solid ${colors.borderStrong}`,
                   borderRadius: 12,
                   overflow: "hidden",
                   background: colors.bg3,

@@ -5,7 +5,6 @@ import { Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 import { hero } from "@/lib/marketing-copy";
 import {
-  HERO_BEATS,
   HERO_COPY,
   HERO_OPS_PANELS,
   beatBlend,
@@ -15,7 +14,6 @@ import { heroSlam, heroRetreat, introGhostOpacity } from "@/lib/hero-choreograph
 import { useRobotFlowOptional } from "@/components/RobotFlowContext";
 import { useFlowOptional } from "@/components/FlowZone";
 import { colors } from "@/lib/tokens";
-import MetaLabel from "@/components/ui/MetaLabel";
 import FloatingOpsPanel from "@/components/FloatingOpsPanel";
 
 function useHeroScrub(): number {
@@ -44,7 +42,6 @@ export default function CinematicHero() {
 
   const beat = resolveHeroBeat(scrub);
   const blend = beatBlend(scrub);
-  const beatIdx = HERO_BEATS.indexOf(beat);
   const slam = heroSlam(scrub);
   const retreat = heroRetreat(scrub);
 
@@ -92,32 +89,14 @@ export default function CinematicHero() {
         }}
       />
 
-      <div className="cinematic-hero-meta-tl">
-        <MetaLabel accent={colors.dimmer}>(ORQIS_OPS)</MetaLabel>
-      </div>
-      <div className="cinematic-hero-meta-tr">
-        <MetaLabel accent={colors.dimmer}>
-          [{String(beatIdx + 1).padStart(2, "0")} / {String(HERO_BEATS.length).padStart(2, "0")}]
-        </MetaLabel>
-      </div>
-
-      <div className="cinematic-hero-progress" aria-hidden>
-        <div className="cinematic-hero-progress-fill" style={{ width: `${scrub * 100}%` }} />
-      </div>
-
       <div className="cinematic-hero-grid">
         <div
           className="cinematic-hero-col cinematic-hero-col--copy"
           style={{ transform: `translateY(${copyShift}px)` }}
         >
           <div className="cinematic-hero-badge">
-            <span className="cinematic-hero-badge-dot" />
             Agent Ops · GitHub PR-first
           </div>
-
-          <MetaLabel accent={beat.tint} style={{ display: "block", marginBottom: 14 }}>
-            {beat.kicker}
-          </MetaLabel>
 
           <h1 className="cinematic-hero-headline editorial-headline">
             <span className="cinematic-hero-headline-line">{HERO_COPY.line1}</span>
@@ -143,7 +122,7 @@ export default function CinematicHero() {
             <Link to="/settings" className="btn-ghost cinematic-hero-btn">
               Connect GitHub →
             </Link>
-            <Link to="/dashboard" className="btn-secondary cinematic-hero-btn">
+            <Link to="/dashboard" className="btn-ghost cinematic-hero-btn">
               View Demo ↗
             </Link>
           </div>

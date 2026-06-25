@@ -378,22 +378,6 @@ export default function ScrollTextSection() {
                   headlineRefs.current[i] = el;
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-                    <div style={{ width: 28, height: 1, background: phase.accent, opacity: 0.5 }} />
-                    <span
-                      style={{
-                        fontFamily: "'DM Mono', monospace",
-                        fontSize: 11,
-                        letterSpacing: "0.22em",
-                        color: phase.accent,
-                        opacity: 0.65,
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {phase.num} / 05
-                    </span>
-                  </div>
-
                   <div style={{ overflow: "visible", marginBottom: 20 }}>
                     {(phase.lines as readonly string[]).map((line, j) => {
                       const isAccent = phase.accentLine === j;
@@ -498,7 +482,7 @@ export default function ScrollTextSection() {
                             ri < phase.widget.rows.length - 1 ? "1px solid rgba(255,255,255,0.03)" : "none",
                         }}
                       >
-                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#3a3a3a" }}>
+                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#8fa39a" }}>
                           {row.label}
                         </span>
                         <span
@@ -513,7 +497,7 @@ export default function ScrollTextSection() {
                                     ? "#ff3333"
                                     : i === 1
                                       ? "#ffaa00"
-                                      : "#444444"
+                                      : "#8fa39a"
                                   : phase.accent,
                           }}
                         >
@@ -528,25 +512,11 @@ export default function ScrollTextSection() {
           ))}
 
           <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 10 }}>
-            <div style={{ height: 1, background: "rgba(255,255,255,0.06)" }}>
-              <div
-                ref={barRef}
-                style={{
-                  height: "100%",
-                  background: "linear-gradient(90deg, #00ff88, #4d94ff)",
-                  transformOrigin: "left",
-                  transform: "scaleX(0)",
-                  willChange: "transform",
-                }}
-              />
-            </div>
-
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
-                justifyContent: "center",
-                gap: 20,
+                justifyContent: "flex-end",
                 padding: "14px 32px",
               }}
             >
@@ -554,49 +524,8 @@ export default function ScrollTextSection() {
                 style={{
                   fontFamily: "'DM Mono', monospace",
                   fontSize: 10,
-                  color: "#333333",
+                  color: "#9fb1a8",
                   letterSpacing: "0.15em",
-                  position: "absolute",
-                  left: 32,
-                }}
-              >
-                <span ref={numRef} style={{ color: "#666666" }}>
-                  01
-                </span>
-                <span style={{ color: "#222222" }}> / 05</span>
-              </span>
-
-              {PHASES.map((phase, i) => (
-                <button
-                  key={i}
-                  onClick={() => scrollToPhase(i)}
-                  title={`Jump to phase ${phase.num}`}
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 99,
-                    background: "rgba(255,255,255,0.15)",
-                    border: "none",
-                    cursor: "pointer",
-                    padding: 0,
-                    transition: "background 0.3s ease, width 0.3s ease",
-                    willChange: "background, width",
-                    pointerEvents: "all",
-                  }}
-                  ref={(el) => {
-                    dotRefs.current[i] = el;
-                  }}
-                />
-              ))}
-
-              <span
-                style={{
-                  fontFamily: "'DM Mono', monospace",
-                  fontSize: 10,
-                  color: "#222222",
-                  letterSpacing: "0.15em",
-                  position: "absolute",
-                  right: 32,
                 }}
               >
                 SCROLL ↓
