@@ -51,8 +51,6 @@ export default function TopBar({
             ORQIS
           </span>
         </Link>
-        <span style={{ color: C.border, fontSize: 16 }}>/</span>
-        <span style={{ ...mono, fontSize: 12, color: C.dim }}>[production]</span>
         <span className="cursor-blink" style={{ ...mono, fontSize: 12, color: C.green }}>
           _
         </span>

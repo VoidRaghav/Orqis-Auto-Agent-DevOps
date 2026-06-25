@@ -102,7 +102,7 @@ export default function Dashboard() {
         <KpiStrip events={events} incidents={incidents} />
       </div>
 
-      <div className="ops-terminal-frame corner-brackets">
+      <div className="ops-terminal-frame">
         <div className="ops-terminal-frame-edge" />
         <div className="dashboard-body">
         <div className="dashboard-main">
@@ -149,9 +149,10 @@ export default function Dashboard() {
                     hint="Connect GitHub for auto-fix PRs →"
                   />
                 ) : (
-                  incidents.map((i) => (
+                  incidents.map((i, idx) => (
                     <IncidentCard
                       key={i.id}
+                      index={idx + 1}
                       incident={i}
                       highlighted={highlightIncidentId === i.id}
                       onApprove={approveIncident}

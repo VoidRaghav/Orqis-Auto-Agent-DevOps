@@ -9,6 +9,7 @@ import { LiveDot } from "./ui";
 
 export default function IncidentCard({
   incident,
+  index,
   highlighted,
   onApprove,
   onDismiss,
@@ -17,6 +18,7 @@ export default function IncidentCard({
   onCopyPrompt,
 }: {
   incident: Incident;
+  index?: number;
   highlighted?: boolean;
   onApprove: (id: string, force?: boolean) => Promise<unknown>;
   onDismiss: (id: string) => Promise<unknown>;
@@ -97,7 +99,21 @@ export default function IncidentCard({
         style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", cursor: "pointer" }}
         onClick={() => setExpanded((x) => !x)}
       >
-        <LiveDot color={statusColor} />
+        {index != null ? (
+          <span
+            className="incident-index"
+            style={{
+              ...mono,
+              color: statusColor,
+              borderColor: `${statusColor}44`,
+              background: `${statusColor}14`,
+            }}
+          >
+            {index}
+          </span>
+        ) : (
+          <LiveDot color={statusColor} />
+        )}
 
         <span
           style={{

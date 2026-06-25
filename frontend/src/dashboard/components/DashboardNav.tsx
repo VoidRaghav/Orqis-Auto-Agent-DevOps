@@ -1,5 +1,4 @@
 import { Link, useLocation } from "react-router-dom";
-import MetaLabel from "@/components/ui/MetaLabel";
 import { colors, fonts, mono } from "@/lib/tokens";
 import type { GithubConnectInfo } from "@/lib/types";
 
@@ -29,7 +28,6 @@ export default function DashboardNav({
         <Link to="/settings" className={`dashboard-nav-link ${pathname === "/settings" ? "is-active" : ""}`}>
           Settings
         </Link>
-        <MetaLabel accent={colors.dimmer}>[production]</MetaLabel>
       </nav>
 
       <div className="dashboard-nav-status">

@@ -23,7 +23,7 @@ export function LiveDot({ color = C.green }: { color?: string }) {
 export function Panel({ children, style }: { children: ReactNode; style?: React.CSSProperties }) {
   return (
     <div
-      className="corner-brackets ops-panel"
+      className="ops-panel"
       style={{
         background: "rgba(14, 24, 21, 0.55)",
         border: `1px solid ${C.border}`,

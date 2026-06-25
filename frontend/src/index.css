@@ -2303,6 +2303,14 @@ body::before {
   --ops-accent-2: 110, 181, 255;
 }
 
+/* No corner-bracket decorations on ops pages */
+.dashboard-page .corner-brackets::before,
+.dashboard-page .corner-brackets::after,
+.settings-page .corner-brackets::before,
+.settings-page .corner-brackets::after {
+  display: none;
+}
+
 .dashboard-page[data-mood="live"] {
   --ops-accent: 61, 220, 151;
   --ops-accent-2: 94, 207, 184;
@@ -2605,6 +2613,20 @@ body::before {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.incident-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid;
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  line-height: 1;
 }
 
 .dashboard-changes {
