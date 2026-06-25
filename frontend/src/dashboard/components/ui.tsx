@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { C } from "../constants";
 import { mono } from "../shared";
 
@@ -22,12 +23,14 @@ export function LiveDot({ color = C.green }: { color?: string }) {
 export function Panel({ children, style }: { children: ReactNode; style?: React.CSSProperties }) {
   return (
     <div
-      className="corner-brackets"
+      className="ops-panel"
       style={{
-        background: C.bg3,
+        background: "rgba(14, 24, 21, 0.55)",
         border: `1px solid ${C.border}`,
         borderRadius: 12,
         overflow: "hidden",
+        backdropFilter: "blur(14px) saturate(1.15)",
+        boxShadow: "inset 0 1px 0 rgba(94, 207, 184, 0.06)",
         ...style,
       }}
     >
@@ -57,25 +60,69 @@ export function PanelHeader({ label, right }: { label: string; right?: ReactNode
   );
 }
 
-export function EmptyState({ label, hint }: { label: string; hint?: string }) {
+export function EmptyState({
+  label,
+  hint,
+  hero,
+}: {
+  label: string;
+  hint?: string;
+  hero?: boolean;
+}) {
+  if (hero) {
+    return (
+      <div className="dashboard-onboard">
+        <div className="dashboard-onboard-badge">Mission control</div>
+        <h2 className="dashboard-onboard-title">Watching for incidents</h2>
+        <p className="dashboard-onboard-sub">{label}</p>
+
+        <div className="dashboard-onboard-steps">
+          <div className="dashboard-onboard-step">
+            <span className="dashboard-onboard-step-n">1</span>
+            <span>Instrument your app</span>
+          </div>
+          <div className="dashboard-onboard-step">
+            <span className="dashboard-onboard-step-n">2</span>
+            <span>Connect GitHub</span>
+          </div>
+          <div className="dashboard-onboard-step">
+            <span className="dashboard-onboard-step-n">3</span>
+            <span>Review auto-fix PRs</span>
+          </div>
+        </div>
+
+        <div className="dashboard-onboard-code">
+          <div>
+            <span className="c-keyword">import</span> <span className="c-name">orqis</span>
+          </div>
+          <div>
+            <span className="c-name">orqis</span>
+            <span className="c-fn">.init()</span>
+          </div>
+        </div>
+
+        {hint && (
+          <Link to="/settings" className="dashboard-onboard-cta">
+            {hint}
+          </Link>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        height: 220,
-        gap: 12,
-        padding: 24,
-      }}
-    >
-      <div style={{ fontFamily: "'Anton', sans-serif", fontSize: 32, color: C.dim, opacity: 0.5 }}>⌬</div>
-      <span style={{ ...mono, fontSize: 11, color: C.dim }}>{label}</span>
+    <div className="dashboard-empty-state">
+      <div className="dashboard-empty-visual" aria-hidden>
+        <span className="dashboard-empty-ring dashboard-empty-ring-outer" />
+        <span className="dashboard-empty-ring dashboard-empty-ring-mid" />
+        <span className="dashboard-empty-ring dashboard-empty-ring-inner" />
+        <span className="dashboard-empty-core">◇</span>
+      </div>
+      <p className="dashboard-empty-label">{label}</p>
       {hint && (
-        <a href="/settings" style={{ ...mono, fontSize: 10, color: C.github, textDecoration: "none", marginTop: 8 }}>
+        <Link to="/settings" className="dashboard-empty-hint">
           {hint}
-        </a>
+        </Link>
       )}
     </div>
   );

@@ -102,6 +102,11 @@ export default function RightRail({ events, traces }: { events: LogEvent[]; trac
       <Panel>
         <PanelHeader label="Error rate · last 60s" />
         <div style={{ padding: "12px 8px 8px" }}>
+          {events.length === 0 ? (
+            <div style={{ ...mono, fontSize: 10, color: C.dim, padding: "8px 6px 16px" }}>
+              Flat — no events yet.
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height={80}>
             <AreaChart data={sparkData}>
               <defs>
@@ -127,6 +132,7 @@ export default function RightRail({ events, traces }: { events: LogEvent[]; trac
               <Area type="monotone" dataKey="errors" stroke={C.red} strokeWidth={1.5} fill="url(#errGrad)" />
             </AreaChart>
           </ResponsiveContainer>
+          )}
         </div>
       </Panel>
 
@@ -151,7 +157,7 @@ export default function RightRail({ events, traces }: { events: LogEvent[]; trac
             right={<span style={{ ...mono, fontSize: 9, color: C.green }}>SDK</span>}
           />
           <div style={{ padding: "12px 14px" }}>
-            <div style={{ ...mono, fontSize: 10, color: C.dim, marginBottom: 8 }}>Instrument in one line:</div>
+            <div style={{ ...mono, fontSize: 10, color: C.dim, marginBottom: 8 }}>One line:</div>
             <div
               style={{
                 background: C.bg,
@@ -167,8 +173,8 @@ export default function RightRail({ events, traces }: { events: LogEvent[]; trac
                 orqis<span style={{ color: C.white }}>.init()</span>
               </div>
             </div>
-            <div style={{ ...inter, fontSize: 11, color: C.dim, marginTop: 10, lineHeight: 1.6 }}>
-              Auto-patches OpenAI, Anthropic &amp; LangChain. Zero config.
+            <div style={{ ...inter, fontSize: 11, color: C.dim, marginTop: 10 }}>
+              OpenAI · Anthropic · LangChain
             </div>
             <a
               href="/settings"

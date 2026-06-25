@@ -1,5 +1,6 @@
 "use client";
 
+import { Link } from "react-router-dom";
 import type { GithubConnectInfo } from "@/lib/types";
 import { C } from "../constants";
 import { mono } from "../shared";
@@ -29,7 +30,7 @@ export default function TopBar({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-        <a href="/" style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none" }}>
+        <Link to="/" style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none" }}>
           <div
             style={{
               width: 26,
@@ -49,9 +50,7 @@ export default function TopBar({
           <span style={{ fontFamily: "'Anton', sans-serif", fontSize: 16, color: C.white, letterSpacing: "0.03em" }}>
             ORQIS
           </span>
-        </a>
-        <span style={{ color: C.border, fontSize: 16 }}>/</span>
-        <span style={{ ...mono, fontSize: 12, color: C.dim }}>[production]</span>
+        </Link>
         <span className="cursor-blink" style={{ ...mono, fontSize: 12, color: C.green }}>
           _
         </span>

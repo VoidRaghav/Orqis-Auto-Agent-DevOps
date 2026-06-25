@@ -3,12 +3,12 @@ import type { CSSProperties } from "react";
 /** Loop Autopsy × Organic Field — Awwwards palette */
 
 export const colors = {
-  bg: "#050a08",
-  bg2: "#0a1210",
-  bg3: "#0f1a16",
-  surface: "#14221c",
-  border: "rgba(245, 240, 232, 0.08)",
-  borderStrong: "rgba(245, 240, 232, 0.14)",
+  bg: "#0a110f",
+  bg2: "#101a17",
+  bg3: "#15221e",
+  surface: "#1a2b24",
+  border: "rgba(245, 240, 232, 0.11)",
+  borderStrong: "rgba(245, 240, 232, 0.17)",
   white: "#ffffff",
   ivory: "#f5f0e8",
   phosphor: "#5ecfb8",

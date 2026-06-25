@@ -1,23 +1,29 @@
+import { colors, statusColors } from "@/lib/tokens";
+
+/** Dashboard palette — aligned with landing tokens */
 export const C = {
-  green: "#00ff41",
-  amber: "#ffb000",
-  red: "#ff2a2a",
-  blue: "#7dd3fc",
-  github: "#7dd3fc",
-  nebula1: "#ececec",
-  nebula2: "#8a8a8a",
-  white: "#ececec",
-  dim: "#555555",
-  dimmer: "#333333",
-  bg: "#050505",
-  bg2: "#0c0c0c",
-  bg3: "#111111",
-  border: "rgba(255,255,255,0.08)",
+  green: colors.green,
+  amber: colors.amber,
+  red: colors.red,
+  blue: colors.github,
+  github: colors.github,
+  nebula1: colors.ivory,
+  nebula2: colors.muted,
+  white: colors.white,
+  ivory: colors.ivory,
+  dim: colors.dim,
+  dimmer: colors.dimmer,
+  muted: colors.muted,
+  bg: colors.bg,
+  bg2: colors.bg2,
+  bg3: colors.bg3,
+  border: colors.border,
+  glow: colors.glow,
 };
 
 export const LEVEL_COLOR: Record<string, string> = {
   DEBUG: C.dim,
-  INFO: "#8a8a8a",
+  INFO: C.muted,
   WARNING: C.amber,
   ERROR: C.red,
   CRITICAL: C.red,
@@ -32,10 +38,10 @@ export const TYPE_COLOR: Record<string, string> = {
   RECURSION: C.red,
   HTTP_ERROR: C.red,
   TRACEBACK: C.red,
-  TYPE_ERROR: C.white,
-  VALUE_ERROR: C.white,
-  ATTRIBUTE_ERROR: C.white,
-  IMPORT_ERROR: C.white,
+  TYPE_ERROR: C.ivory,
+  VALUE_ERROR: C.ivory,
+  ATTRIBUTE_ERROR: C.ivory,
+  IMPORT_ERROR: C.ivory,
   TOOL_FAILURE: C.amber,
   SYNTAX_ERROR: C.red,
   PERMISSION_ERROR: C.amber,
@@ -44,7 +50,13 @@ export const TYPE_COLOR: Record<string, string> = {
 };
 
 export const ACTIVE_STATUSES = new Set<string>([
-  "open", "patching", "patched", "low_confidence", "pr_open", "pr_failed", "patch_stale",
+  "open",
+  "patching",
+  "patched",
+  "low_confidence",
+  "pr_open",
+  "pr_failed",
+  "patch_stale",
 ]);
 
 export const HEALED_STATUSES = new Set<string>(["approved", "resolved"]);
@@ -58,3 +70,7 @@ export const CHANGE_META: Record<string, { label: string; color: string; icon: s
   pr_failed: { label: "PR FAILED", color: C.red, icon: "!" },
   patch_stale: { label: "PATCH STALE", color: C.amber, icon: "△" },
 };
+
+export function incidentStatusColor(status: string): string {
+  return statusColors[status] ?? C.dim;
+}
