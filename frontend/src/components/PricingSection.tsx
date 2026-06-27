@@ -162,6 +162,13 @@ export default function PricingSection() {
             </div>
           ))}
         </div>
+
+        <p style={{ ...inter, fontSize: 14, color: "#b6c7be", textAlign: "center", marginTop: 32 }}>
+          Running at real scale? SSO, SLAs, on-prem —{" "}
+          <a href="mailto:raghavsaxena217@gmail.com" style={{ color: colors.green, textDecoration: "none", fontWeight: 600 }}>
+            let&apos;s talk →
+          </a>
+        </p>
       </div>
     </section>
   );
