@@ -2,7 +2,6 @@
 
 import type { Incident } from "@/lib/types";
 import { C } from "../constants";
-import { LiveDot } from "./ui";
 
 export default function HealthHero({
   incidents,
@@ -74,7 +73,6 @@ export default function HealthHero({
   return (
     <div className="dashboard-status" style={{ borderLeftColor: tone }}>
       <div className="dashboard-status-main">
-        <LiveDot color={tone} />
         <div>
           <div className="dashboard-status-title">{title}</div>
           <div className="dashboard-status-sub">{sub}</div>

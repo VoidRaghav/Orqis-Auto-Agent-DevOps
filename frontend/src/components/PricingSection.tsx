@@ -6,43 +6,54 @@ import { colors, fonts, mono, inter } from "@/lib/tokens";
 
 const PLANS = [
   {
-    name: "Free",
+    name: "Starter",
     price: { mo: 0, yr: 0 },
-    desc: "Pipe logs. See incidents. No card.",
-    features: ["1 agent", "Incident detect + RCA", "3-day retention", "Copy prompt for any IDE", "npx install"],
+    custom: false,
+    desc: "Best for devs testing one agent in production.",
+    features: [
+      "Catches silent failures in real time",
+      "Tells you exactly what broke and why",
+      "Copy the fix into your own IDE",
+      "1 agent",
+      "7-day history",
+    ],
     cta: "Start Free",
     href: "/settings",
     highlight: false,
   },
   {
     name: "Pro",
-    price: { mo: 20, yr: 16 },
-    desc: "GitHub PR-first fixes at scale.",
+    price: { mo: 19, yr: 15 },
+    custom: false,
+    desc: "Best for teams shipping agents that can't go down.",
     features: [
+      "Everything in Starter",
+      "Orqis opens the GitHub PR for you — you just merge",
       "Unlimited agents",
-      "GitHub PR workflow",
-      "RUNAWAY_LOOP guard",
-      "CHANGES audit log",
-      "MCP + local apply",
-      "30-day retention",
+      "Instant loop & cost-spike guard",
+      "Every fix logged (full audit trail)",
+      "30-day history",
       "Slack + email alerts",
     ],
-    cta: "Connect GitHub →",
+    cta: "Start Now",
     href: "/settings",
     highlight: true,
   },
   {
-    name: "Team",
-    price: { mo: 79, yr: 63 },
-    desc: "Multi-agent production fleets.",
+    name: "Enterprise",
+    price: { mo: 0, yr: 0 },
+    custom: true,
+    desc: "Best for orgs running agents at scale.",
     features: [
       "Everything in Pro",
-      "Shared repo grants",
-      "Multi-agent topology",
-      "Priority support",
-      "SSO (coming soon)",
+      "Multiple repos & teams",
+      "See every agent's health in one view",
+      "Who-approved-what audit for your whole team",
+      "Custom SLAs & priority support",
+      "Founders Slack channel",
+      "Time directly with the founders",
     ],
-    cta: "Contact Us",
+    cta: "Let's chat",
     href: "#",
     highlight: false,
   },
@@ -117,11 +128,15 @@ export default function PricingSection() {
                 <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginBottom: 8 }}>
                   <span style={{
                     fontFamily: "'Anton', sans-serif", fontSize: 48,
-                    color: plan.highlight ? "#000" : plan.name === "Team" ? "#ffffff" : "#b6c7be",
+                    color: plan.highlight ? "#000" : "#ffffff",
                   }}>
-                    ${annual ? plan.price.yr : plan.price.mo}
+                    {plan.custom
+                      ? "Custom"
+                      : (annual ? plan.price.yr : plan.price.mo) === 0
+                        ? "Free"
+                        : `$${annual ? plan.price.yr : plan.price.mo}`}
                   </span>
-                  {plan.price.mo > 0 && (
+                  {!plan.custom && (annual ? plan.price.yr : plan.price.mo) > 0 && (
                     <span style={{ ...mono, fontSize: 12, color: plan.highlight ? "#666" : "#9aaca3" }}>/mo</span>
                   )}
                 </div>

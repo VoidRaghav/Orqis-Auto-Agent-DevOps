@@ -14,7 +14,7 @@ const PANELS = [
     num: "01",
     title: "Detect",
     ghostWord: "TRACE",
-    desc: "Logs and AI tool traces stream in. Orqis fingerprints runaway loops and tracebacks, locates the exact file and line, and opens an incident in under a second.",
+    desc: "Catches runaway loops and crashes the moment they happen — down to the exact file and line.",
     accent: colors.green,
     code: [
       { t: "TRACE", msg: "check_order_status ×8 in 30s — circuit_break", color: colors.amber },
@@ -27,7 +27,7 @@ const PANELS = [
     num: "02",
     title: "Patch",
     ghostWord: "PATCH",
-    desc: "Deterministic diff from the traceback — no hallucinated rewrites. Guardrails cap blast radius. Every line tied to the incident fingerprint.",
+    desc: "Writes a real, verified fix straight from the trace. No guessing, no rewrites you didn't ask for.",
     accent: colors.amber,
     diff: [
       { type: "rem", code: "while True:" },
@@ -42,7 +42,7 @@ const PANELS = [
     num: "03",
     title: "Review PR",
     ghostWord: "PR",
-    desc: "Ships to a branch — never main. GitHub PR with diff, incident context, and CI checks. You review like any other engineer's PR.",
+    desc: "Opens a GitHub PR on its own branch — never main. You approve it like any teammate's.",
     accent: colors.github,
     pr: {
       branch: "orqis/fix-runaway-loop-4421",
@@ -55,7 +55,7 @@ const PANELS = [
     num: "04",
     title: "Apply Local",
     ghostWord: "APPLY",
-    desc: "No GitHub? Patch lands on disk instantly. MCP push to your IDE or copy the neutral prompt — Cursor, Claude Code, Windsurf, VS Code.",
+    desc: "No GitHub? The fix lands right in your editor — Cursor, Claude Code, Windsurf, VS Code.",
     accent: colors.glow,
     local: [
       { key: "path", val: "agents/refund_agent.py" },
@@ -68,7 +68,7 @@ const PANELS = [
     num: "05",
     title: "Audit",
     ghostWord: "AUDIT",
-    desc: "CHANGES tab is the source of truth — who approved, what shipped, PR link or local apply. Full timeline for compliance and postmortems.",
+    desc: "Every fix on one clean timeline — who approved it, what shipped, and when.",
     accent: colors.green,
     audit: [
       { t: "14:02:01", event: "RUNAWAY_LOOP detected", sc: colors.amber },

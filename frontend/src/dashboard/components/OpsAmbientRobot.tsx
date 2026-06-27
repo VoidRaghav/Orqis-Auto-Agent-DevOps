@@ -66,7 +66,7 @@ export default function OpsAmbientRobot({ mood }: { mood: OpsMood }) {
       <div className="ops-ambient-robot-glow" />
       <div className="ops-ambient-robot-canvas">
         <RobotFlowContext.Provider value={bus}>
-          <RobotScene height="100%" variant="face" />
+          <RobotScene />
         </RobotFlowContext.Provider>
       </div>
     </div>
