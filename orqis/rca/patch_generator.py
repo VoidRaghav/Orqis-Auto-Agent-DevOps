@@ -15,13 +15,18 @@ Why we don't ask the model for a diff:
 
 Flow:
   1. Build a focused prompt: error + the exact code block to repair.
-  2. Call Ollama (free) or Anthropic (paid) — same config as interpreter.py.
+  2. Call Claude Opus (when a key is set) or local Ollama as a fallback.
   3. Splice the returned block back into the file and difflib the result.
   4. Never write to disk — the caller stores the diff and waits for approval.
 
-Cost: ~300-600 input tokens + ~250 output tokens per patch call.
+Model choice: patching is correctness-critical, so it uses the strongest model
+(Claude Opus by default) with adaptive thinking, independent of the cheaper
+interpretation model. The reasoning stays in thinking blocks so the visible
+answer is a clean code block.
+
+Cost: ~3k-8k input tokens + ~1k-3k output tokens per patch call.
   Ollama: $0
-  Haiku:  ~$0.003 per patch
+  Opus 4.8: ~$0.05-0.15 per patch (deterministic fixes cost $0)
 """
 
 import difflib
@@ -83,8 +88,13 @@ async def generate(
     prompt = _build_prompt(error_message, location)
     system = _LOOP_SYSTEM_PROMPT if kind == "loop" else _SYSTEM_PROMPT
 
-    if config.LLM_PROVIDER == "anthropic":
+    # Always prefer Claude Opus for patches when a key is available — correctness
+    # here is worth far more than the per-patch cost. Fall back to local Ollama
+    # on any failure, or when no key is configured.
+    if config.ANTHROPIC_API_KEY:
         raw = await _call_anthropic(prompt, system)
+        if raw is None:
+            raw = await _call_ollama(prompt, system)
     else:
         raw = await _call_ollama(prompt, system)
 
@@ -136,15 +146,28 @@ async def _call_anthropic(prompt: str, system: str) -> Optional[str]:
         import anthropic
         client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
         response = await client.messages.create(
-            model=config.ANTHROPIC_MODEL,
-            max_tokens=600,
+            model=config.ANTHROPIC_PATCH_MODEL,
+            max_tokens=8192,
             system=system,
+            # Adaptive thinking keeps the reasoning in thinking blocks, so the
+            # visible answer stays a clean code block; high effort favours a
+            # correct patch over token savings.
+            thinking={"type": "adaptive"},
+            output_config={"effort": "high"},
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text.strip()
+        return _text_block(response)
     except Exception as e:
         _warn_llm("Anthropic", e)
         return None
+
+
+def _text_block(response) -> Optional[str]:
+    """Return the assistant's text output, skipping any thinking blocks."""
+    for block in response.content:
+        if getattr(block, "type", None) == "text":
+            return block.text.strip()
+    return None
 
 
 # Strip a markdown code fence if the model wrapped its answer in one.

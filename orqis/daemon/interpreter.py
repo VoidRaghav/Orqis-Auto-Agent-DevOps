@@ -102,7 +102,7 @@ async def _call_ollama(raw_line: str, error_type: Optional[ErrorType]) -> str:
 
 
 async def _call_anthropic(raw_line: str, error_type: Optional[ErrorType]) -> str:
-    """Call Anthropic Claude Haiku — requires credits."""
+    """Call the Anthropic interpretation model (small/fast) — requires credits."""
     import anthropic
 
     client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -111,7 +111,7 @@ async def _call_anthropic(raw_line: str, error_type: Optional[ErrorType]) -> str
 
     try:
         response = await client.messages.create(
-            model=config.ANTHROPIC_MODEL,
+            model=config.ANTHROPIC_INTERPRET_MODEL,
             max_tokens=config.LLM_MAX_TOKENS,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],

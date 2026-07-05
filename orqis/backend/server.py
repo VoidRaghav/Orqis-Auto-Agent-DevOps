@@ -57,6 +57,13 @@ async def lifespan(app: FastAPI):
             "and GITHUB_APP_ID is set"
         )
 
+    # Multi-tenant mode: ensure the Postgres schema exists. Without DATABASE_URL
+    # the backend stays single-tenant and skips this entirely.
+    if config.MULTI_TENANT:
+        from . import db
+
+        await db.init_models()
+
     # Safety net: reconcile any incidents stuck in pr_open whose merge webhook
     # was missed or misconfigured (U1/P4). Runs every 5 minutes.
     poll_task = asyncio.create_task(_poll_open_prs_loop())

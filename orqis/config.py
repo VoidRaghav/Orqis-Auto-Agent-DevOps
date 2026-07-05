@@ -3,13 +3,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# LLM provider: "anthropic" | "ollama"
+# LLM provider for error interpretation: "anthropic" | "ollama"
 # Use "ollama" for free local inference during development/demo
 LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "ollama")
 
-# Anthropic (paid) — only used when LLM_PROVIDER=anthropic
+# Anthropic (paid). Patch generation always prefers Anthropic when a key is set,
+# regardless of LLM_PROVIDER — patch correctness is what users pay for, and the
+# per-patch cost is negligible next to the incident it resolves.
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL: str = "claude-haiku-4-5-20251001"
+# Interpretation is a one-sentence summary — a small, fast model is plenty.
+ANTHROPIC_INTERPRET_MODEL: str = os.getenv("ANTHROPIC_INTERPRET_MODEL", "claude-haiku-4-5")
+# Patch + RCA generation is correctness-critical — use the strongest model.
+ANTHROPIC_PATCH_MODEL: str = os.getenv("ANTHROPIC_PATCH_MODEL", "claude-opus-4-8")
 
 # Ollama (free, local) — only used when LLM_PROVIDER=ollama
 # Install: brew install ollama && ollama serve && ollama pull llama3.2:3b
@@ -18,6 +23,21 @@ OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 
 # Redis for storing live event state
 REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+
+# Postgres — system of record for tenants, API keys, users, GitHub installs, and
+# the durable incident/audit history. When unset, the backend runs in
+# single-tenant mode (no auth, one shared "default" workspace) for local dev.
+DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+
+# Multi-tenant mode is on whenever a database is configured. In this mode the
+# ingest endpoints require a per-tenant API key and all state is scoped by it.
+MULTI_TENANT: bool = bool(DATABASE_URL)
+
+# GitHub OAuth (dashboard login). Distinct from the GitHub App credentials.
+GITHUB_OAUTH_CLIENT_ID: str = os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
+GITHUB_OAUTH_CLIENT_SECRET: str = os.getenv("GITHUB_OAUTH_CLIENT_SECRET", "")
+# Signs dashboard session cookies. Required in production; dev falls back.
+SESSION_SECRET: str = os.getenv("ORQIS_SESSION_SECRET", "orqis-dev-session-secret")
 
 # URL of the Orqis backend server (daemon pushes events here)
 BACKEND_URL: str = os.getenv("ORQIS_BACKEND_URL", "http://localhost:8000")
