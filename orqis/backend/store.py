@@ -18,6 +18,7 @@ from typing import Optional
 import redis.asyncio as aioredis
 
 from .. import config
+from ..backend import durable
 from ..backend.models import ChangeLogEntry, Incident, IncidentStatus, LogEvent, TraceEvent
 
 _redis: Optional[aioredis.Redis] = None
@@ -119,6 +120,7 @@ async def save_incident(incident: Incident) -> None:
     pipe.set(key, incident.model_dump_json(), ex=_INCIDENT_TTL_SECONDS)
     pipe.zadd("orqis:incidents:timeline", {incident.id: score})
     await pipe.execute()
+    await durable.upsert_incident(incident)
 
 
 async def update_incident(incident_id: str, **fields) -> Optional[Incident]:
@@ -139,6 +141,7 @@ async def update_incident(incident_id: str, **fields) -> Optional[Incident]:
         data.update(fields)
         updated = Incident(**data)
         await r.set(key, updated.model_dump_json(), keepttl=True)
+        await durable.upsert_incident(updated)
         return updated
 
 
@@ -169,6 +172,7 @@ async def clear_all() -> dict:
         pipe.delete(timeline)
         await pipe.execute()
         counts[kind] = len(ids)
+    await durable.clear_all()
     return counts
 
 
@@ -226,6 +230,7 @@ async def save_change(entry: ChangeLogEntry) -> None:
     pipe.zadd("orqis:changes:timeline", {entry.id: score})
     pipe.zremrangebyrank("orqis:changes:timeline", 0, -(config.REDIS_EVENT_LIMIT + 1))
     await pipe.execute()
+    await durable.record_change(entry)
 
 
 async def get_recent_changes(limit: int = 100) -> list[ChangeLogEntry]:
@@ -314,6 +319,7 @@ async def finalize_pr_open(
         pipe.persist(key)
         pipe.set(key, updated.model_dump_json())
         await pipe.execute()
+        await durable.upsert_incident(updated)
         return updated
 
 
@@ -389,4 +395,5 @@ async def save_settings(patch: dict) -> dict:
     current = await get_settings()
     current.update({k: v for k, v in patch.items() if k in _DEFAULT_SETTINGS})
     await r.set(_SETTINGS_KEY, json.dumps(current))
+    await durable.save_settings(current)
     return current

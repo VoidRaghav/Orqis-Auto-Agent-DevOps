@@ -11,7 +11,7 @@ import datetime as _dt
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -155,3 +155,51 @@ class GithubInstallation(Base):
     )
 
     tenant: Mapped[Tenant] = relationship(back_populates="installation")
+
+
+# --- Durable records (system of record; Redis is the live cache) -------------
+# These survive restarts. Each keeps the query-critical columns indexed plus a
+# JSONB blob of the full model so no field is ever lost and the exact Pydantic
+# object can be reconstructed on rehydration.
+
+class IncidentRow(Base):
+    __tablename__ = "incidents"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(40), index=True, default="default")
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    error_type: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    source: Mapped[Optional[str]] = mapped_column(String(160), nullable=True, index=True)
+    repo_full_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    pr_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[_dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    resolved_at: Mapped[Optional[_dt.datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[_dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=_utcnow
+    )
+    data: Mapped[dict] = mapped_column(JSONB)
+
+
+class ChangeRow(Base):
+    """The CHANGES audit trail — durable for compliance/postmortems."""
+
+    __tablename__ = "change_log"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(40), index=True, default="default")
+    incident_id: Mapped[Optional[str]] = mapped_column(String(40), index=True, nullable=True)
+    action: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[_dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    data: Mapped[dict] = mapped_column(JSONB)
+
+
+class WorkspaceSettings(Base):
+    """Per-tenant workspace config incl. the GitHub installation — never lost."""
+
+    __tablename__ = "workspace_settings"
+
+    tenant_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSONB)
+    updated_at: Mapped[_dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=_utcnow
+    )

@@ -23,6 +23,7 @@ Railway setup:
 
 import asyncio
 import json
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -57,12 +58,28 @@ async def lifespan(app: FastAPI):
             "and GITHUB_APP_ID is set"
         )
 
-    # Multi-tenant mode: ensure the Postgres schema exists. Without DATABASE_URL
-    # the backend stays single-tenant and skips this entirely.
-    if config.MULTI_TENANT:
-        from . import db
+    # Durable store: when DATABASE_URL is set, Postgres is the system of record.
+    # Ensure the schema exists, then rehydrate Redis (the live/cache layer) from
+    # Postgres so incidents, the audit trail, workspace settings, and the
+    # PR->incident index survive a restart or a wiped Redis. Without DATABASE_URL
+    # the backend runs purely on Redis exactly as before.
+    from . import db, durable
 
-        await db.init_models()
+    if durable.enabled():
+        # If Postgres is momentarily unreachable at boot, degrade to Redis and
+        # keep serving rather than crash-looping the whole backend. Durable
+        # writes are already best-effort, so the system self-heals once the DB
+        # is back and the next incident/change is written.
+        try:
+            await db.init_models()
+            restored = await durable.rehydrate_redis()
+            print(f"[orqis] durable store active — rehydrated {restored}", file=sys.stderr)
+        except Exception as e:
+            print(
+                f"[orqis] WARNING: durable store bootstrap failed ({type(e).__name__}: {e}) "
+                "— serving from Redis only until Postgres is reachable",
+                file=sys.stderr,
+            )
 
     # Safety net: reconcile any incidents stuck in pr_open whose merge webhook
     # was missed or misconfigured (U1/P4). Runs every 5 minutes.
