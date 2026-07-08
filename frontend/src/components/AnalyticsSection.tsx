@@ -84,7 +84,7 @@ const TT_STYLE = {
 
 export default function AnalyticsSection() {
   return (
-    <section className="flow-section flow-tail-section" style={{ padding: "100px 32px" }}>
+    <section className="flow-section flow-tail-section landing-analytics" style={{ paddingTop: 100, paddingBottom: 100 }}>
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
         <div style={{ textAlign: "center", marginBottom: 60 }}>
           <SectionMeta index="003" tag="(ANALYTICS)" />
@@ -101,10 +101,10 @@ export default function AnalyticsSection() {
           </p>
         </div>
 
-        {/* 2×2 chart grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        {/* 2×2 chart grid — columns owned by .landing-analytics-grid */}
+        <div className="landing-analytics-grid">
           {CHARTS.map((c, i) => (
-            <div key={i} className="corner-brackets" style={{
+            <div key={i} className="corner-brackets landing-analytics-card" style={{
               background: colors.bg2,
               border: `1px solid ${colors.border}`,
               borderRadius: 0, padding: 24,
@@ -114,7 +114,8 @@ export default function AnalyticsSection() {
                 <div style={{ ...mono, fontSize: 11, color: "#ffffff", marginBottom: 4 }}>{c.title}</div>
                 <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#8fa39a" }}>{c.sub}</div>
               </div>
-              <ResponsiveContainer width="100%" height={160}>
+              <div className="landing-analytics-chart">
+              <ResponsiveContainer width="100%" height="100%">
                 {c.chart === "area" ? (
                   <AreaChart data={c.data}>
                     <defs>
@@ -150,6 +151,7 @@ export default function AnalyticsSection() {
                   </LineChart>
                 )}
               </ResponsiveContainer>
+              </div>
             </div>
           ))}
         </div>

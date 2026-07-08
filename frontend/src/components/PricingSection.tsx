@@ -52,7 +52,7 @@ export default function PricingSection() {
   const [annual, setAnnual] = useState(false);
 
   return (
-    <section className="flow-section flow-tail-section" style={{ padding: "100px 32px" }}>
+    <section className="flow-section flow-tail-section landing-pricing" style={{ paddingTop: 100, paddingBottom: 100 }}>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <div style={{ textAlign: "center", marginBottom: 56 }}>
           <SectionMeta index="004" tag="(PRICING)" />
@@ -90,8 +90,8 @@ export default function PricingSection() {
           </div>
         </div>
 
-        {/* Cards */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
+        {/* Cards — columns owned by .landing-pricing-grid */}
+        <div className="landing-pricing-grid">
           {PLANS.map((plan) => (
             <div key={plan.name} className="pricing-card" style={{
               background: plan.highlight ? "#ffffff" : "#0a0a0a",

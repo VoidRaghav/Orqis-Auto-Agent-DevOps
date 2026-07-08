@@ -67,7 +67,13 @@ function easeInOutGuide(t: number) {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
-export default function RobotScene() {
+export default function RobotScene({
+  height = "100vh",
+  variant = "default",
+}: {
+  height?: string;
+  variant?: "default" | "face";
+}) {
   const mountRef = useRef<HTMLDivElement>(null);
   const mouse = useRef({ x: 0, y: 0 });
   const rafRef = useRef(0);
@@ -79,10 +85,12 @@ export default function RobotScene() {
 
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    const getSize = () => ({
-      w: container.clientWidth || Math.round(window.innerWidth * 0.58),
-      h: container.clientHeight || window.innerHeight,
-    });
+    const getSize = () => {
+      const rail = container.closest(".dashboard-face-bg") as HTMLElement | null;
+      const w = container.clientWidth || rail?.clientWidth || Math.round(window.innerWidth * 0.44);
+      const h = container.clientHeight || rail?.clientHeight || Math.round(window.innerHeight * 0.55);
+      return { w: Math.max(w, 280), h: Math.max(h, 320) };
+    };
     const { w: W, h: H } = getSize();
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -130,6 +138,7 @@ export default function RobotScene() {
     scrollRig.add(robot);
 
     robot.add(new THREE.Mesh(roundedBox(1.10, 1.10, 1.10, 0.09, 10), bodyMat));
+    const bodyMesh = robot.children[0] as THREE.Mesh;
 
     const neckCone = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.24, 0.36, 32), bodyMat);
     neckCone.position.y = 0.71;
@@ -144,6 +153,7 @@ export default function RobotScene() {
     robot.add(headGroup);
 
     headGroup.add(new THREE.Mesh(roundedBox(1.50, 0.94, 0.70, 0.13, 10), bodyMat));
+    const headMesh = headGroup.children[0] as THREE.Mesh;
     const screen = new THREE.Mesh(roundedBox(1.22, 0.68, 0.04, 0.08, 6), screenMat);
     screen.position.set(0, 0.02, 0.355);
     headGroup.add(screen);
@@ -204,28 +214,44 @@ export default function RobotScene() {
     const glow2 = glowDisc(purpleTex, 6.2, -0.7);
     floorGroup.add(glow1, glow2);
 
-    scene.add(new THREE.HemisphereLight(0x4422aa, 0xff2266, 0.18));
-    scene.add(new THREE.AmbientLight(0x1a1428, 0.35));
+    const hemi = new THREE.HemisphereLight(0x4422aa, 0xff2266, 0.18);
+    scene.add(hemi);
+    const ambient = new THREE.AmbientLight(0x1a1428, 0.35);
+    scene.add(ambient);
 
     const spot = new THREE.SpotLight(0xfff0e0, 8, 12, Math.PI / 5.5, 0.55, 1.2);
     spot.position.set(0.5, 5, 3);
     spot.target.position.set(0, 0.5, 0);
     scene.add(spot, spot.target);
 
+    const dirIntensities = [3.2, 4.2, 2.0, 0.9, 1.2];
+    const dirLights: THREE.DirectionalLight[] = [];
     [
       [0xff2233, 3.2, [1, 4, -3]],
       [0x7733ff, 4.2, [-4, 3.5, 2]],
       [0xff5522, 2.0, [4, 0.5, 2]],
       [0xddddff, 0.9, [0, 1, 5]],
       [0x3355ff, 1.2, [-1.5, 2, -5]],
-    ].forEach(([color, intensity, pos]) => {
+    ].forEach(([color, intensity, pos], i) => {
       const l = new THREE.DirectionalLight(color as number, intensity as number);
       l.position.set(...(pos as [number, number, number]));
       scene.add(l);
+      dirLights.push(l);
+      dirIntensities[i] = intensity as number;
     });
     const pinkLight = new THREE.PointLight(0xff0066, 14, 14);
     pinkLight.position.set(0, -1.5, 2.2);
     scene.add(pinkLight);
+
+    const faceKey = new THREE.DirectionalLight(0xf0f4ff, 0);
+    faceKey.position.set(0.2, 1.2, 5);
+    scene.add(faceKey);
+    const faceFill = new THREE.DirectionalLight(0x5ecfb8, 0);
+    faceFill.position.set(-3, 0.5, 4);
+    scene.add(faceFill);
+    const faceRim = new THREE.PointLight(0x88ddff, 0, 12);
+    faceRim.position.set(1.5, 0.8, 2.5);
+    scene.add(faceRim);
 
     const projectAnchors = (): Partial<Record<RobotSocket, ScreenAnchor>> => {
       const rect = container.getBoundingClientRect();
@@ -270,6 +296,12 @@ export default function RobotScene() {
       renderer.setSize(w, h);
     };
     window.addEventListener("resize", onResize);
+    onResize();
+
+    const resizeObserver = new ResizeObserver(() => onResize());
+    resizeObserver.observe(container);
+    const rail = container.closest(".dashboard-face-bg");
+    if (rail) resizeObserver.observe(rail);
 
     const eyeBaseL = new THREE.Vector3(-0.27, 0.02, 0.41);
     const eyeBaseR = new THREE.Vector3(0.27, 0.02, 0.41);
@@ -280,10 +312,127 @@ export default function RobotScene() {
     let eyeOffX = 0, eyeOffY = 0;
     const clock = new THREE.Clock();
     const baseCamZ = 6.4;
+    const HEAD_LOCAL_Y = 1.3;
+    const savedBodyMetal = bodyMat.metalness;
+    const savedBodyRough = bodyMat.roughness;
 
     const tick = () => {
       rafRef.current = requestAnimationFrame(tick);
       const t = reducedMotion ? 0 : clock.getElapsedTime();
+
+      if (variant === "face") {
+        const { w: fw, h: fh } = getSize();
+        const aspect = fw / Math.max(fh, 1);
+        const headCenterY = 0.28;
+        const camZ = aspect > 1.05 ? 2.72 : 2.52;
+
+        bodyMesh.visible = false;
+        headMesh.visible = true;
+        screen.visible = true;
+        neckCone.visible = false;
+        neckJoint.visible = false;
+        floorGroup.visible = false;
+        tendrilGroup.visible = false;
+        depthField.group.visible = false;
+        glow1.visible = false;
+        glow2.visible = false;
+
+        scrollRig.position.set(0, 0, 0);
+        scrollRig.rotation.set(0, 0, 0);
+        scrollRig.scale.setScalar(1);
+        scrollRig.visible = true;
+
+        robot.position.y = -HEAD_LOCAL_Y + headCenterY + (reducedMotion ? 0 : Math.sin(t * 0.45) * 0.01);
+        robot.rotation.y = 0;
+
+        bodyMat.metalness = 0.35;
+        bodyMat.roughness = 0.42;
+        bodyMat.color.setHex(0x182030);
+        bodyMat.emissive.setHex(0x243850);
+        bodyMat.emissiveIntensity = 0.35;
+        screenMat.metalness = 0.4;
+        screenMat.roughness = 0.25;
+        screenMat.color.setHex(0x060a12);
+        screenMat.emissive.setHex(0x0c1828);
+        screenMat.emissiveIntensity = 0.12;
+
+        hemi.intensity = 0.22;
+        ambient.intensity = 0.55;
+        ambient.color.setHex(0x1a2838);
+        for (const [i, l] of dirLights.entries()) {
+          l.intensity = 0;
+        }
+
+        headY += (Math.max(-0.35, Math.min(0.35, mouse.current.x * 0.42)) - headY) * 0.08;
+        headX += (Math.max(-0.18, Math.min(0.18, mouse.current.y * 0.26)) - headX) * 0.08;
+        const tEyeX = Math.max(-0.12, Math.min(0.12, mouse.current.x * 0.12));
+        const tEyeY = Math.max(-0.06, Math.min(0.06, mouse.current.y * 0.08));
+        eyeOffX += (tEyeX - eyeOffX) * 0.14;
+        eyeOffY += (tEyeY - eyeOffY) * 0.14;
+        headGroup.rotation.y = headY;
+        headGroup.rotation.x = headX;
+        eyeL.position.set(eyeBaseL.x + eyeOffX, eyeBaseL.y + eyeOffY, eyeBaseL.z + eyeOffY * 0.15);
+        eyeR.position.set(eyeBaseR.x + eyeOffX, eyeBaseR.y + eyeOffY, eyeBaseR.z + eyeOffY * 0.15);
+
+        eyeMat.emissiveIntensity = 1.45 + Math.sin(t * 1.6) * 0.1;
+        pinkLight.intensity = 2.5;
+        pinkLight.position.set(0, headCenterY - 0.9, 2.8);
+        spot.intensity = 1.8;
+        spot.target.position.set(0, headCenterY, 0);
+        faceKey.intensity = 2.2;
+        faceFill.intensity = 1.4;
+        faceRim.intensity = 3.2;
+        renderer.toneMappingExposure = 1.65;
+
+        camera.position.set(0, headCenterY + 0.14, camZ);
+        camera.lookAt(0, headCenterY - 0.04, 0);
+        camera.fov = aspect > 1.1 ? 27 : 31;
+        camera.updateProjectionMatrix();
+
+        scene.fog = null;
+        container.style.opacity = "1";
+
+        if (flow) {
+          const rect = container.getBoundingClientRect();
+          flow.hubXRef.current = rect.left + rect.width * 0.5;
+        }
+
+        renderer.render(scene, camera);
+        return;
+      }
+
+      bodyMesh.visible = true;
+      headMesh.visible = true;
+      screen.visible = true;
+      neckCone.visible = true;
+      bodyMat.metalness = savedBodyMetal;
+      bodyMat.roughness = savedBodyRough;
+      bodyMat.color.setHex(0x0a0814);
+      bodyMat.emissive.setHex(0x000000);
+      bodyMat.emissiveIntensity = 0;
+      screenMat.metalness = 0.65;
+      screenMat.roughness = 0.04;
+      screenMat.color.setHex(0x040206);
+      screenMat.emissive.setHex(0x000000);
+      screenMat.emissiveIntensity = 0;
+      hemi.intensity = 0.18;
+      ambient.intensity = 0.35;
+      ambient.color.setHex(0x1a1428);
+      for (const [i, l] of dirLights.entries()) {
+        l.intensity = dirIntensities[i] ?? 1;
+      }
+      faceKey.intensity = 0;
+      faceFill.intensity = 0;
+      faceRim.intensity = 0;
+      pinkLight.intensity = 14;
+      pinkLight.position.set(0, -1.5, 2.2);
+      spot.intensity = 8;
+      spot.target.position.set(0, 0.5, 0);
+      renderer.toneMappingExposure = 1.55;
+      if (!scene.fog) {
+        scene.fog = new THREE.FogExp2(0x000000, 0.055);
+      }
+
       const progress = flow?.progressRef.current ?? 0;
       const heroScrub = flow?.heroScrubRef.current ?? 0;
       const director = flow?.directorRef.current ?? resolveDirector(progress);
@@ -495,6 +644,7 @@ export default function RobotScene() {
       cancelAnimationFrame(rafRef.current);
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("resize", onResize);
+      resizeObserver.disconnect();
       depthField.dispose();
       for (const { mesh } of tubes) {
         mesh.geometry.dispose();
@@ -507,12 +657,12 @@ export default function RobotScene() {
         container.removeChild(renderer.domElement);
       }
     };
-  }, [flow]);
+  }, [flow, variant]);
 
   return (
     <div
       ref={mountRef}
-      style={{ width: "100%", height: "100vh", display: "block", pointerEvents: "none", overflow: "visible" }}
+      style={{ width: "100%", height, display: "block", pointerEvents: "none", overflow: "visible" }}
     />
   );
 }

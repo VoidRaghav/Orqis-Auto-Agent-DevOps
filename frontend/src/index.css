@@ -636,6 +636,8 @@ body::before {
 .flow-tail-section {
   position: relative;
   background: transparent !important;
+  padding-left: 32px;
+  padding-right: 32px;
 }
 
 .flow-tail-section::before {
@@ -654,8 +656,23 @@ body::before {
   z-index: 1;
 }
 
-.mc-cinematic-shell {
-  will-change: transform, opacity;
+/* Sticky stages: use small viewport height where supported (iOS URL bar) — desktop only.
+   Mobile guide-robot-rail stays 50vh via existing @media (max-width: 900px). */
+@supports (height: 100svh) {
+  @media (min-width: 901px) {
+    .scroll-phase-stage,
+    .flow-features-stage,
+    .cinematic-hero-stage,
+    .guide-robot-rail {
+      height: 100svh;
+    }
+
+    .scroll-phase-stage,
+    .flow-features-stage,
+    .cinematic-hero-stage {
+      min-height: 100svh;
+    }
+  }
 }
 
 @keyframes mc-row-in {
@@ -1155,8 +1172,10 @@ body::before {
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr auto;
     padding-top: 88px;
-    padding-bottom: 52vh;
+    padding-bottom: 46vh;
     min-height: 100vh;
+    padding-left: 16px;
+    padding-right: 16px;
   }
 
   .cinematic-hero-col--corridor {
@@ -1196,6 +1215,22 @@ body::before {
     bottom: 18px;
     right: 24px;
     font-size: 16px;
+  }
+
+  .cinematic-hero-col--copy {
+    padding-left: 0;
+    padding-right: 0;
+    max-width: 100%;
+  }
+
+  .cinematic-hero-ghost {
+    font-size: clamp(4.5rem, 28vw, 9rem);
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .cinematic-hero-btn {
+    padding: 14px 24px;
   }
 }
 
@@ -1450,14 +1485,19 @@ body::before {
     height: 150vh;
   }
 
-  .guide-robot-rail {
-    width: min(92vw, 480px);
-    left: 50%;
-    transform: translateX(-50%);
-    height: 50vh;
-    top: auto;
+  /* Pin robot to lower half — sticky top:0 was covering hero copy */
+  .guide-robot-rail,
+  .flow-zone--hero-phase .guide-robot-rail,
+  .flow-zone--splash .guide-robot-rail {
+    position: fixed;
+    top: 52vh;
     bottom: 0;
-    margin-bottom: -50vh;
+    left: 50%;
+    width: min(72vw, 300px);
+    height: 48vh;
+    margin-bottom: 0;
+    z-index: 2;
+    transform: translateX(-50%);
   }
 
   .guide-panels-rail {
@@ -1482,6 +1522,19 @@ body::before {
       rgba(0, 0, 0, 0.75) 70%,
       #000000 100%
     );
+  }
+
+  /* Ops floaters collide with CTAs on phone — keep story, drop panels */
+  .cinematic-hero-ops-rail {
+    display: none;
+  }
+
+  .cinematic-hero-col--ops {
+    display: none;
+  }
+
+  .cinematic-hero-dash-link {
+    display: none;
   }
 }
 
@@ -3227,3 +3280,183 @@ body::before {
   display: flex;
   justify-content: flex-end;
 }
+
+/* ── LANDING RESPONSIVE (layout breakpoint = 900px; GPU tier = 768px) ── */
+
+.landing-analytics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.landing-analytics-chart {
+  width: 100%;
+  height: 160px;
+}
+
+.landing-pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.landing-footer-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 48px;
+}
+
+.mc-cinematic-body {
+  padding: 24px;
+  min-height: 400px;
+}
+
+.mc-issues-grid {
+  display: grid;
+  grid-template-columns: 1fr min(280px, 32%);
+  gap: 16px;
+}
+
+.mc-ai-calls-row {
+  grid-template-columns: 64px 1fr 80px 1fr;
+}
+
+.scroll-phase-wrap {
+  height: 300vh;
+  position: relative;
+}
+
+.landing-static-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 88px 16px 48px;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.landing-static-card {
+  border-radius: 14px;
+  padding: 20px 18px;
+}
+
+.landing-static-card + .landing-static-widget {
+  margin-top: -8px;
+}
+
+@media (max-width: 900px) {
+  .landing-analytics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .landing-analytics-chart {
+    height: 200px;
+  }
+
+  .landing-pricing-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .landing-footer-grid {
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
+
+  .flow-tail-section {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .mc-cinematic {
+    padding-top: 64px !important;
+    padding-bottom: 80px !important;
+  }
+
+  .mc-cinematic-shell {
+    transform: none !important;
+    will-change: opacity;
+  }
+
+  .mc-cinematic-body {
+    padding: 16px;
+    min-height: 0;
+  }
+
+  .mc-issues-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mc-ai-calls-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .flow-features-corridor {
+    display: none;
+  }
+
+  /* Desktop sticky scrub tracks — replaced by static stacks on mobile via JS */
+  .scroll-phase-wrap--desktop,
+  .flow-features-scroll--desktop {
+    display: none;
+  }
+
+  .landing-static-section {
+    display: block;
+  }
+}
+
+@media (min-width: 901px) {
+  .landing-static-section {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .landing-footer-grid {
+    gap: 24px;
+  }
+
+  .landing-analytics-card {
+    padding: 16px !important;
+  }
+
+  .cinematic-hero-col--copy {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .cinematic-hero-ghost {
+    white-space: normal;
+    font-size: clamp(3.2rem, 20vw, 5.5rem);
+    letter-spacing: 0.04em;
+    text-align: center;
+    max-width: 100%;
+    overflow: hidden;
+    word-break: break-word;
+  }
+
+  .cinematic-hero-btn {
+    padding: 12px 18px;
+    font-size: 12px;
+  }
+
+  .cinematic-hero-grid {
+    padding-bottom: 48vh;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .cinematic-hero-ctas {
+    gap: 10px;
+  }
+
+  .cinematic-hero-headline {
+    font-size: clamp(2.2rem, 11vw, 3.2rem);
+  }
+
+  .landing-static-stack {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+}
+
