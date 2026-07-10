@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFlow } from "@/components/FlowZone";
 import { registerPanel, unregisterPanel } from "@/lib/panel-registry";
-import MetaLabel, { SectionMeta } from "@/components/ui/MetaLabel";
+import MetaLabel from "@/components/ui/MetaLabel";
 import TerminalPanel from "@/components/ui/TerminalPanel";
 import FlowSectionOverlay from "@/components/FlowSectionOverlay";
 import { colors, fonts, mono } from "@/lib/tokens";
 import { SCROLL_GHOST_PEAK } from "@/lib/hero-choreography";
+import { useLayoutMobile } from "@/hooks/useLayoutMobile";
 
 const PANELS = [
   {
@@ -87,7 +88,6 @@ const PANEL_LAYOUTS = [
   { textTop: "15%", panelTop: "14%", panelRight: "3%" },
 ];
 
-const TOTAL_VH = 300;
 const IN = 0.06;
 const OUT = 0.94;
 
@@ -106,6 +106,7 @@ function lerp(a: number, b: number, t: number) {
 
 export default function FeaturesSection() {
   const { setTint } = useFlow();
+  const isMobile = useLayoutMobile();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const stickyRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef(0);
@@ -197,6 +198,14 @@ export default function FeaturesSection() {
   }, [setTint]);
 
   useEffect(() => {
+    if (isMobile) {
+      cancelAnimationFrame(rafRef.current);
+      if (registeredActive.current >= 0) {
+        unregisterPanel(`feature-headline-${registeredActive.current}`);
+        registeredActive.current = -1;
+      }
+      return;
+    }
     const tick = () => {
       update();
       rafRef.current = requestAnimationFrame(tick);
@@ -208,11 +217,73 @@ export default function FeaturesSection() {
         unregisterPanel(`feature-headline-${registeredActive.current}`);
       }
     };
-  }, [update]);
+  }, [update, isMobile]);
+
+  if (isMobile) {
+    return (
+      <div className="flow-features-wrap landing-static-section">
+        <div className="landing-static-stack">
+          <div className="flow-section-headline" style={{ textAlign: "center", marginBottom: 8 }}>
+            <h2
+              className="editorial-headline"
+              style={{ fontSize: "clamp(2rem, 8vw, 3rem)", color: colors.white, marginTop: 8 }}
+            >
+              DETECT. PATCH.
+              <br />
+              <em>review.</em> <span style={{ color: colors.green }}>SHIP.</span>
+            </h2>
+          </div>
+          {PANELS.map((panel) => (
+            <div key={panel.num} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div
+                className="flow-panel landing-static-card"
+                style={{ border: `1px solid ${panel.accent}33` }}
+              >
+                <div
+                  style={{
+                    fontFamily: fonts.mono,
+                    fontSize: 10,
+                    letterSpacing: "0.18em",
+                    color: panel.accent,
+                    marginBottom: 10,
+                  }}
+                >
+                  {panel.num}
+                </div>
+                <h3
+                  style={{
+                    fontFamily: fonts.anton,
+                    fontSize: "clamp(1.8rem, 8vw, 2.4rem)",
+                    color: panel.accent,
+                    lineHeight: 0.95,
+                    marginBottom: 12,
+                  }}
+                >
+                  {panel.title.toUpperCase()}
+                </h3>
+                <p
+                  style={{
+                    fontFamily: fonts.inter,
+                    fontSize: 14,
+                    color: colors.muted,
+                    lineHeight: 1.7,
+                  }}
+                >
+                  {panel.desc}
+                </p>
+              </div>
+              <FeatureVisual panel={panel} />
+            </div>
+          ))}
+        </div>
+        <div className="section-divider" />
+      </div>
+    );
+  }
 
   return (
     <div className="flow-features-wrap">
-      <div ref={wrapperRef} className="flow-features-scroll">
+      <div ref={wrapperRef} className="flow-features-scroll flow-features-scroll--desktop">
         <div ref={stickyRef} className="flow-features-stage">
           <div ref={introRef} className="flow-features-intro flow-section-headline">
             <h2

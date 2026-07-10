@@ -1,4 +1,10 @@
-/** WebGL capability tiers for adaptive rendering. */
+/**
+ * WebGL capability tiers for adaptive rendering.
+ *
+ * `narrow` (width < 768) affects GPU quality only.
+ * Landing *layout* / nav breakpoints use 900px — see `layout-breakpoint.ts`.
+ * Do not conflate layout width with WebGL tier.
+ */
 
 export type DeviceTier = "high" | "mid" | "low";
 

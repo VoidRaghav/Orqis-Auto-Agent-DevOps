@@ -42,7 +42,8 @@ export default function FooterCTA() {
         className="flow-section flow-tail-section"
         style={{
           position: "relative",
-          padding: "128px 24px",
+          paddingTop: 128,
+          paddingBottom: 128,
           overflow: "hidden",
           backgroundColor: "transparent",
         }}
@@ -121,7 +122,7 @@ export default function FooterCTA() {
       {/* Footer */}
       <footer style={{ backgroundColor: "#000000", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
         <div style={{ maxWidth: 1280, margin: "0 auto", padding: "48px 32px" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 48, marginBottom: 48 }}>
+          <div className="landing-footer-grid" style={{ marginBottom: 48 }}>
 
             {/* Brand */}
             <div>

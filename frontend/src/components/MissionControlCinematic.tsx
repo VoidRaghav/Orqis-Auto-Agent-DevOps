@@ -9,6 +9,7 @@ import TerminalPanel from "@/components/ui/TerminalPanel";
 import FlowSectionOverlay from "@/components/FlowSectionOverlay";
 import { INCIDENT_CHAPTERS } from "@/lib/incident-sim";
 import { colors, fonts, mono, inter } from "@/lib/tokens";
+import { useLayoutMobile } from "@/hooks/useLayoutMobile";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -60,6 +61,7 @@ export default function MissionControlCinematic() {
   const [chapterIdx, setChapterIdx] = useState(1);
   const [stamp, setStamp] = useState("14:02:00");
   const [reducedMotion, setReducedMotion] = useState(false);
+  const isMobile = useLayoutMobile();
   const tabIdxRef = useRef(0);
   const tabStartRef = useRef(Date.now());
 
@@ -72,21 +74,25 @@ export default function MissionControlCinematic() {
     const shell = shellRef.current;
     if (!section || !shell || reducedMotion) return;
 
+    // Flat entrance on mobile — no perspective tilt (clips on narrow screens)
+    const from = isMobile
+      ? { opacity: 0, y: 32 }
+      : { opacity: 0, y: 48, rotateX: 8, transformPerspective: 1200 };
+    const to = isMobile
+      ? { opacity: 1, y: 0, duration: 0.9, ease: "power3.out" }
+      : { opacity: 1, y: 0, rotateX: 4, duration: 1.1, ease: "power3.out" };
+
     const st = ScrollTrigger.create({
       trigger: section,
       start: "top 75%",
       onEnter: () => {
-        gsap.fromTo(
-          shell,
-          { opacity: 0, y: 48, rotateX: 8, transformPerspective: 1200 },
-          { opacity: 1, y: 0, rotateX: 4, duration: 1.1, ease: "power3.out" }
-        );
+        gsap.fromTo(shell, from, to);
       },
       once: true,
     });
 
     return () => st.kill();
-  }, [reducedMotion]);
+  }, [reducedMotion, isMobile]);
 
   useEffect(() => {
     if (paused || reducedMotion) return;
@@ -135,7 +141,7 @@ export default function MissionControlCinematic() {
       ref={sectionRef}
       id="mission-control"
       className="flow-section flow-tail-section mc-cinematic"
-      style={{ padding: "80px 32px 100px" }}
+      style={{ paddingTop: 80, paddingBottom: 100 }}
     >
       <FlowSectionOverlay accent={colors.glow} side="full" />
 
@@ -169,7 +175,7 @@ export default function MissionControlCinematic() {
           borderRadius: 18,
           overflow: "hidden",
           opacity: reducedMotion ? 1 : 0,
-          transform: reducedMotion ? "none" : "perspective(1200px) rotateX(4deg)",
+          transform: reducedMotion || isMobile ? "none" : "perspective(1200px) rotateX(4deg)",
           transformOrigin: "center top",
           boxShadow: `0 48px 140px rgba(0,0,0,0.9), 0 0 100px ${colors.glowDim}`,
         }}
@@ -194,7 +200,7 @@ export default function MissionControlCinematic() {
             <MetaLabel accent={colors.dimmer}>{stamp}</MetaLabel>
           </div>
           <a href="/dashboard" className="btn-ghost" style={{ padding: "8px 16px", textDecoration: "none", fontSize: 10 }}>
-            Open full →
+            Command Deck →
           </a>
         </div>
 
@@ -266,9 +272,9 @@ export default function MissionControlCinematic() {
           )}
         </div>
 
-        <div style={{ padding: 24, minHeight: 400 }}>
+        <div className="mc-cinematic-body">
           {tab === "ISSUES & FIXES" && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr min(280px, 32%)", gap: 16 }}>
+            <div className="mc-issues-grid">
               <div
                 style={{
                   border: `1px solid ${colors.borderStrong}`,
@@ -409,9 +415,9 @@ export default function MissionControlCinematic() {
                 {AI_CALLS.map((c, i) => (
                   <div
                     key={i}
+                    className="mc-ai-calls-row"
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "64px 1fr 80px 1fr",
                       gap: 12,
                       padding: "12px 18px",
                       borderBottom: i < AI_CALLS.length - 1 ? `1px solid ${colors.border}` : "none",

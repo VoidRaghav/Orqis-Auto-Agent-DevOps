@@ -6,6 +6,7 @@ import { registerPanel, unregisterPanel } from "@/lib/panel-registry";
 import { useRobotFlowOptional } from "@/components/RobotFlowContext";
 import { SCROLL_GHOST_PEAK } from "@/lib/hero-choreography";
 import FlowSectionOverlay from "@/components/FlowSectionOverlay";
+import { useLayoutMobile } from "@/hooks/useLayoutMobile";
 
 const PHASES = [
   {
@@ -100,7 +101,6 @@ const PHASES = [
   },
 ] as const;
 
-const TOTAL_VH = 300;
 const IN = 0.06;
 const OUT = 0.94;
 
@@ -120,9 +120,97 @@ function easeInOut(t: number) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
+function PhaseWidget({
+  phase,
+  phaseIndex,
+}: {
+  phase: (typeof PHASES)[number];
+  phaseIndex: number;
+}) {
+  return (
+    <div
+      className="flow-panel landing-static-widget"
+      style={{
+        borderRadius: 14,
+        overflow: "hidden",
+        border: `1px solid ${phase.accent}28`,
+      }}
+    >
+      <div
+        style={{
+          padding: "13px 18px",
+          borderBottom: `1px solid ${phase.accent}15`,
+          display: "flex",
+          alignItems: "center",
+          gap: 9,
+        }}
+      >
+        <div
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            background: phase.accent,
+          }}
+        />
+        <span
+          style={{
+            fontFamily: "'DM Mono', monospace",
+            fontSize: 10,
+            letterSpacing: "0.18em",
+            color: phase.accent,
+            textTransform: "uppercase",
+            opacity: 0.8,
+          }}
+        >
+          {phase.widget.title}
+        </span>
+      </div>
+      <div style={{ padding: "6px 0" }}>
+        {phase.widget.rows.map((row, ri) => (
+          <div
+            key={ri}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "10px 18px",
+              borderBottom:
+                ri < phase.widget.rows.length - 1 ? "1px solid rgba(255,255,255,0.03)" : "none",
+            }}
+          >
+            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#8fa39a" }}>
+              {row.label}
+            </span>
+            <span
+              style={{
+                fontFamily: "'DM Mono', monospace",
+                fontSize: 12,
+                color:
+                  phaseIndex === 3
+                    ? "#00ff88"
+                    : row.bad
+                      ? phaseIndex === 2
+                        ? "#ff3333"
+                        : phaseIndex === 1
+                          ? "#ffaa00"
+                          : "#8fa39a"
+                      : phase.accent,
+              }}
+            >
+              {row.val}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function ScrollTextSection() {
   const { setTint } = useFlow();
   const flow = useRobotFlowOptional();
+  const isMobile = useLayoutMobile();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const stickyRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number>(0);
@@ -309,6 +397,14 @@ export default function ScrollTextSection() {
   }, [setTint, flow]);
 
   useEffect(() => {
+    if (isMobile) {
+      cancelAnimationFrame(rafRef.current);
+      if (registeredActive.current >= 0) {
+        unregisterPanel(`scroll-headline-${registeredActive.current}`);
+        registeredActive.current = -1;
+      }
+      return;
+    }
     const tick = () => {
       update();
       rafRef.current = requestAnimationFrame(tick);
@@ -320,11 +416,76 @@ export default function ScrollTextSection() {
         unregisterPanel(`scroll-headline-${registeredActive.current}`);
       }
     };
-  }, [update]);
+  }, [update, isMobile]);
+
+  if (isMobile) {
+    return (
+      <>
+        <section className="landing-static-section flow-section" aria-label="The problem">
+          <div className="landing-static-stack">
+            {PHASES.map((phase, i) => (
+              <div key={phase.num} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div
+                  className="flow-panel landing-static-card"
+                  style={{ border: `1px solid ${phase.accent}28` }}
+                >
+                  <div
+                    style={{
+                      fontFamily: "'DM Mono', monospace",
+                      fontSize: 10,
+                      letterSpacing: "0.18em",
+                      color: phase.accent,
+                      marginBottom: 12,
+                    }}
+                  >
+                    {phase.num}
+                  </div>
+                  <div style={{ marginBottom: 12 }}>
+                    {phase.lines.map((line, j) => {
+                      const isAccent = phase.accentLine === j;
+                      return (
+                        <div
+                          key={j}
+                          style={{
+                            fontFamily: "'Anton', sans-serif",
+                            fontSize: "clamp(1.8rem, 9vw, 2.6rem)",
+                            lineHeight: 0.92,
+                            letterSpacing: "-0.02em",
+                            color: isAccent ? "#00ff88" : phase.color,
+                          }}
+                        >
+                          {line}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p
+                    style={{
+                      fontFamily: "'DM Mono', monospace",
+                      fontSize: 11,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                      color: phase.accent,
+                      lineHeight: 1.7,
+                      opacity: 0.85,
+                    }}
+                  >
+                    {phase.sub}
+                  </p>
+                </div>
+                <PhaseWidget phase={phase} phaseIndex={i} />
+              </div>
+            ))}
+          </div>
+        </section>
+        <div className="section-divider" />
+      </>
+    );
+  }
 
   return (
     <>
-      <div ref={wrapperRef} style={{ height: `${TOTAL_VH}vh`, position: "relative" }}>
+      <div ref={wrapperRef} className="scroll-phase-wrap scroll-phase-wrap--desktop">
         <div
           ref={stickyRef}
           className="scroll-phase-stage"

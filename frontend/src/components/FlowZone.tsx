@@ -11,6 +11,7 @@ import { detectDeviceTier } from "@/lib/device-tier";
 import { heroFloorGlow, heroRailShiftVw, heroRobotPresence, guideRobotBackground, measureFinaleReveal, resolveRobotRailPose } from "@/lib/hero-choreography";
 import type { RobotSocket, ScreenAnchor } from "@/lib/flow-paths";
 import { colors } from "@/lib/tokens";
+import { isLayoutMobile, onLayoutMobileChange } from "@/lib/layout-breakpoint";
 
 const RobotScene = lazy(() => import("@/components/RobotScene"));
 
@@ -53,9 +54,14 @@ export default function FlowZone({ children }: { children: React.ReactNode }) {
   const splashActiveRef = useRef(true);
   const rafRef = useRef(0);
   const splashStartRef = useRef(0);
+  const mobileLayoutRef = useRef(isLayoutMobile());
 
   const [splashVisible, setSplashVisible] = useState(true);
   const [splashFading, setSplashFading] = useState(false);
+
+  useEffect(() => onLayoutMobileChange((m) => {
+    mobileLayoutRef.current = m;
+  }), []);
 
   const setTint = useCallback((color: string) => {
     tintRef.current = color;
@@ -130,31 +136,62 @@ export default function FlowZone({ children }: { children: React.ReactNode }) {
 
       if (railRef.current) {
         const inHero = !splashActiveRef.current && phase === "hero" && scrub < 0.995;
-        if (inHero) {
+        const mobile = mobileLayoutRef.current;
+        // Phone: keep robot in hero; hide/degrade after hero so it doesn't overlap stacked content
+        if (mobile && !splashActiveRef.current && !inHero && finale < 0.35) {
+          railRef.current.style.opacity = "0";
+          railRef.current.style.visibility = "hidden";
+          railRef.current.style.pointerEvents = "none";
+          railRef.current.style.setProperty("--robot-rail-shift", "0");
+        } else if (inHero) {
           railRef.current.style.left = "50%";
-          railRef.current.style.zIndex = "4";
-          const shift = heroRailShiftVw(scrub);
+          // Desktop: corridor z; mobile: stay under copy (CSS z-index: 2)
+          railRef.current.style.zIndex = mobile ? "2" : "4";
+          const shift = mobile ? 0 : heroRailShiftVw(scrub);
           const presence = heroRobotPresence(scrub);
           railRef.current.style.transform = `translateX(calc(-50% + ${shift}vw))`;
           railRef.current.style.opacity = String(presence);
           railRef.current.style.filter = "none";
           railRef.current.style.visibility = "visible";
+          railRef.current.style.pointerEvents = "none";
+          if (mobile) {
+            railRef.current.style.top = "52vh";
+            railRef.current.style.height = "48vh";
+          } else {
+            railRef.current.style.top = "";
+            railRef.current.style.height = "";
+          }
         } else if (!splashActiveRef.current) {
           const guide = guideRobotBackground(progressRef.current, corridorBlendRef.current);
           const pose = resolveRobotRailPose(guide, finale);
+          // Soft finale reappear on mobile only if finale is strong
+          const op = mobile ? pose.opacity * Math.min(1, finale) * 0.55 : pose.opacity;
           railRef.current.style.left = `${pose.leftPct}%`;
           railRef.current.style.zIndex = String(pose.zIndex);
           railRef.current.style.transform = `translateX(-50%) scale(${pose.scale})`;
-          railRef.current.style.opacity = String(pose.opacity);
+          railRef.current.style.opacity = String(op);
           railRef.current.style.filter = pose.blur > 0.05 ? `brightness(${pose.brightness})` : "none";
-          railRef.current.style.visibility = "visible";
+          railRef.current.style.visibility = op > 0.02 ? "visible" : "hidden";
+          railRef.current.style.pointerEvents = "none";
+          if (!mobile) {
+            railRef.current.style.top = "";
+            railRef.current.style.height = "";
+          }
         } else {
           railRef.current.style.left = "50%";
-          railRef.current.style.zIndex = "5";
+          railRef.current.style.zIndex = mobile ? "2" : "5";
           railRef.current.style.transform = "translateX(-50%)";
           railRef.current.style.opacity = "1";
           railRef.current.style.filter = "none";
           railRef.current.style.visibility = "visible";
+          railRef.current.style.pointerEvents = "none";
+          if (mobile) {
+            railRef.current.style.top = "52vh";
+            railRef.current.style.height = "48vh";
+          } else {
+            railRef.current.style.top = "";
+            railRef.current.style.height = "";
+          }
         }
         railRef.current.style.setProperty("--robot-rail-shift", "0");
       }
