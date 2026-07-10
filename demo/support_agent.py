@@ -2,26 +2,23 @@
 """
 Orqis demo — a customer-support refund agent with a real, scary bug.
 
-A customer asks: "Where is my refund for order #1042?" To answer, the agent
-must know the order status, so it calls a check_order_status tool. The tool
-returns "processing" — true, but too vague to answer. The agent has no rule
-for "stop after N tries", so it just asks again. And again. The status never
-changes. The loop never ends.
+RefundBot works a support queue. Most tickets have a definite order status, so
+resolve_refund() answers on the first check and the customer is helped — the
+agent looks perfectly healthy. Ticket #1042 is the trap: its status is
+truthfully "processing", which the while loop has no exit condition for, so it
+calls the tool forever. Nothing crashes; no traceback; no linter or unit test
+catches it. Orqis catches it from the live trace stream and trips a circuit
+breaker, then files an incident with a verified fix.
 
-Nothing crashes. The business logic is correct. The tool is correct. No linter,
-no unit test, no traceback catches this. LangSmith would show you the 60 wasted
-calls after the money is gone. Datadog would show the server is perfectly fine.
+Two ways to run it:
 
-The looping function below is deliberately clean — this is the code a founder
-would actually write. All the demo plumbing (cost, the trace stream, the kill
-switch) lives in the instrumentation layer, exactly where a real agent SDK puts
-it. Every tool call is streamed live to Orqis with its cost. Orqis watches the
-stream, spots the same tool + same args firing with no exit condition, and trips
-a circuit breaker — the next trace response tells the agent to stop.
+  Local apply (fix patches this file, agent re-runs healthy on your machine):
+      python demo/support_agent.py
 
-Run it as a terminal demo:   python demo/support_agent.py
-Run it as a web UI:          python demo/web_agent.py   (imports run_session)
-Re-run cleanly:              curl -X POST localhost:8000/demo/reset
+  Hosted GitHub PR flow (fix arrives as a real PR on the connected repo):
+      ORQIS_BACKEND_URL=https://<your-backend> \
+      ORQIS_DEMO_CODE_LOCATION=refund_agent.py:21:resolve_refund \
+      python demo/support_agent.py
 """
 
 import json
@@ -37,6 +34,13 @@ from typing import Callable, Optional
 BACKEND_URL = os.getenv("ORQIS_BACKEND_URL", "http://localhost:8000")
 SOURCE = "support-agent"
 ORDER_ID = "1042"
+
+# The morning's support queue. The first two orders have a definite status, so
+# the loop in resolve_refund exits on the first check and the customer gets an
+# answer — the agent looks perfectly healthy. Ticket #1042 is the trap: its
+# status is truthfully "processing", which the loop has no exit condition for.
+ORDER_STATUS = {"1007": "shipped", "1023": "delivered", ORDER_ID: "processing"}
+TICKETS = ["1007", "1023", ORDER_ID]
 
 # Use Orqis's real production pricing engine to cost each call. Falls back to
 # the same gpt-4o formula if the package isn't importable, so cost is always
@@ -73,6 +77,15 @@ def resolve_refund(order_id: str) -> str:
 # traceback. Robust to the function moving within the file.
 _LOOP_LINE = resolve_refund.__code__.co_firstlineno + 3
 
+# Where Orqis should locate the loop. Defaults to this local file (local-apply
+# demo). For the hosted GitHub PR flow, set ORQIS_DEMO_CODE_LOCATION to the
+# repo file, e.g. "refund_agent.py:21:resolve_refund", so the source resolver
+# maps it to the connected repo and opens a real PR there.
+CODE_LOCATION = os.getenv(
+    "ORQIS_DEMO_CODE_LOCATION",
+    f"{os.path.abspath(__file__)}:{_LOOP_LINE}:resolve_refund",
+)
+
 
 # ─────────────────────── instrumentation layer ────────────────────────
 # In a real deployment this is the agent SDK / tool wrapper. It does the
@@ -91,6 +104,7 @@ class CircuitBreak(Exception):
 # Per-session counters and the live event sink. run_session() resets these.
 _calls = 0
 _spent = 0.0
+_checks: dict = {}
 _sink: Optional[Callable[[dict], None]] = None
 
 
@@ -103,6 +117,8 @@ def check_order_status(order_id: str) -> str:
     """
     global _calls, _spent
     _calls += 1
+    _checks[order_id] = _checks.get(order_id, 0) + 1
+    status = ORDER_STATUS.get(order_id, "processing")
 
     # A real agent turn: a large, growing context (system prompt + tool schemas
     # + conversation history) and a short tool-decision output. Cost is computed
@@ -115,38 +131,39 @@ def check_order_status(order_id: str) -> str:
     _emit({
         "type": "call",
         "n": _calls,
+        "check": _checks[order_id],
         "tool": "check_order_status",
         "args": order_id,
-        "result": "processing",
+        "result": status,
         "cost": round(cost, 4),
         "spent": round(_spent, 2),
     })
 
-    if _send_trace(input_tokens, output_tokens, cost):
+    if _send_trace(order_id, input_tokens, output_tokens, cost):
         raise CircuitBreak(_calls, _spent)
     if _calls >= MAX_CALLS:
         raise CircuitBreak(_calls, _spent, backstop=True)
 
     time.sleep(0.45)
-    return "processing"
+    return status
 
 
-def _send_trace(input_tokens: int, output_tokens: int, cost: float) -> bool:
+def _send_trace(order_id: str, input_tokens: int, output_tokens: int, cost: float) -> bool:
     """Stream one tool call to Orqis. Returns True when the breaker has tripped."""
     event = {
         "id": str(uuid.uuid4()),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "kind": "tool.start",
         "provider": "openai",
-        "run_id": f"refund-{ORDER_ID}",
+        "run_id": f"refund-{order_id}",
         "model": "gpt-4o",
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost_usd": cost,
         "latency_ms": random.randint(280, 620),
         "tool_name": "check_order_status",
-        "tool_args": ORDER_ID,
-        "code_location": f"{os.path.abspath(__file__)}:{_LOOP_LINE}:resolve_refund",
+        "tool_args": order_id,
+        "code_location": CODE_LOCATION,
         "source": SOURCE,
     }
     data = json.dumps(event).encode()
@@ -157,7 +174,7 @@ def _send_trace(input_tokens: int, output_tokens: int, cost: float) -> bool:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read() or b"{}")
             return bool(body.get("circuit_break"))
     except Exception as e:
@@ -169,7 +186,7 @@ def reset_backend() -> bool:
     """Clear Orqis's anomaly + dedup state so a session re-trips cleanly."""
     req = urllib.request.Request(f"{BACKEND_URL}/demo/reset", data=b"", method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=5):
+        with urllib.request.urlopen(req, timeout=10):
             return True
     except Exception:
         return False
@@ -177,26 +194,41 @@ def reset_backend() -> bool:
 
 def run_session(emit: Optional[Callable[[dict], None]] = None) -> dict:
     """
-    Run one refund attempt start to finish, streaming structured events to
-    `emit` (the terminal CLI and the web UI both subscribe). Resets per-session
-    state so it can be called repeatedly. Returns a final summary dict.
+    Work the morning's ticket queue start to finish, streaming structured events
+    to `emit` (the terminal CLI and the web UI both subscribe). The first two
+    tickets resolve normally — proof the agent works — then ticket #1042 hits
+    the unbounded loop. Resets per-session state so it can be called repeatedly.
     """
-    global _calls, _spent, _sink
-    _calls, _spent = 0, 0.0
+    global _calls, _spent, _checks, _sink
+    _calls, _spent, _checks = 0, 0.0, {}
     _sink = emit
     reset_backend()
 
     _emit({"type": "online", "backend": BACKEND_URL})
-    _emit({"type": "customer", "text": f"Where is my refund for order #{ORDER_ID}?"})
+    helped = 0
+    result: dict = {}
 
-    try:
-        outcome = resolve_refund(ORDER_ID)
-        result = {"type": "resolved", "text": outcome, "calls": _calls, "spent": round(_spent, 2)}
-    except CircuitBreak as cb:
-        if cb.backstop:
-            result = {"type": "backstop", "calls": cb.calls, "spent": round(cb.spent, 2)}
+    for order_id in TICKETS:
+        _emit({"type": "customer", "order": order_id,
+               "text": f"Where is my refund for order #{order_id}?"})
+        try:
+            outcome = resolve_refund(order_id)
+        except CircuitBreak as cb:
+            kind = "backstop" if cb.backstop else "halted"
+            result = {"type": kind, "order": order_id,
+                      "calls": _checks.get(order_id, cb.calls),
+                      "spent": round(cb.spent, 2), "helped": helped}
+            break
+        helped += 1
+        checks = _checks.get(order_id, 0)
+        if order_id == ORDER_ID:
+            # The once-stuck ticket completed — the applied fix is live.
+            result = {"type": "resolved", "order": order_id, "text": outcome,
+                      "calls": checks, "spent": round(_spent, 2), "helped": helped}
         else:
-            result = {"type": "halted", "calls": cb.calls, "spent": round(cb.spent, 2)}
+            _emit({"type": "ticket_done", "order": order_id, "text": outcome,
+                   "checks": checks, "helped": helped})
+            time.sleep(0.9)
 
     _emit(result)
     _sink = None
@@ -233,20 +265,25 @@ def _plain_line(event: dict) -> Optional[str]:
     if t == "online":
         return "RefundBot worker online, polling support queue"
     if t == "customer":
-        return f"ticket #{ORDER_ID} opened: customer asking about their refund"
+        return f"ticket #{event['order']} opened: customer asking about their refund"
     if t == "call":
-        if event["n"] < 4:
-            return f"ticket #{ORDER_ID}: order status is 'processing', re-checking"
-        return f"ticket #{ORDER_ID}: order still 'processing' after {event['n']} checks, no progress"
+        order = event["args"]
+        if event["result"] != "processing":
+            return f"ticket #{order}: order {event['result']} — refund approved"
+        if event["check"] < 4:
+            return f"ticket #{order}: order status is 'processing', re-checking"
+        return f"ticket #{order}: order still 'processing' after {event['check']} checks, no progress"
+    if t == "ticket_done":
+        return f"ticket #{event['order']} resolved in {event['checks']} check(s), customer notified"
     if t == "warn":
         return event["text"]
     if t == "halted":
-        return (f"RefundBot stopped on ticket #{ORDER_ID} by Orqis after "
+        return (f"RefundBot stopped on ticket #{event['order']} by Orqis after "
                 f"{event['calls']} repeated checks with no progress")
     if t == "backstop":
         return f"demo backstop reached at {event['calls']} checks"
     if t == "resolved":
-        return f"ticket #{ORDER_ID} escalated to a human agent after {event['calls']} checks"
+        return f"ticket #{event['order']} escalated to a human agent after {event['calls']} checks"
     return None
 
 
@@ -260,7 +297,7 @@ def _level_for(event: dict) -> str:
     t = event["type"]
     if t in ("halted", "backstop", "warn"):
         return "WARNING"
-    if t == "call" and event["n"] >= 4:
+    if t == "call" and event["result"] == "processing" and event["check"] >= 4:
         return "WARNING"
     return "INFO"
 
@@ -286,7 +323,7 @@ def _send_log(line: str, level: str) -> None:
         method="POST",
     )
     try:
-        urllib.request.urlopen(req, timeout=3).read()
+        urllib.request.urlopen(req, timeout=5).read()
     except Exception:
         pass
 
