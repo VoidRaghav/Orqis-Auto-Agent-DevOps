@@ -13,13 +13,14 @@ import { useLayoutMobile } from "@/hooks/useLayoutMobile";
 
 gsap.registerPlugin(ScrollTrigger);
 
-const TABS = ["ISSUES & FIXES", "CHANGES", "ACTIVITY", "AI CALLS"] as const;
+const TABS = ["Issues", "Changes", "Activity", "AI calls"] as const;
 type Tab = (typeof TABS)[number];
 
 const KPIS = [
-  { label: "detect", value: "<1s", accent: colors.green },
-  { label: "PR open", value: "1", accent: colors.github },
-  { label: "burn blocked", value: "$0.55/s", accent: colors.amber },
+  { label: "errors", value: "3", accent: colors.red },
+  { label: "active", value: "1", accent: colors.amber },
+  { label: "healed", value: "2", accent: colors.green },
+  { label: "warn", value: "0", accent: colors.dim },
 ];
 
 const CHANGES = [
@@ -55,7 +56,7 @@ function accentColor(a: string) {
 export default function MissionControlCinematic() {
   const sectionRef = useRef<HTMLElement>(null);
   const shellRef = useRef<HTMLDivElement>(null);
-  const [tab, setTab] = useState<Tab>("ISSUES & FIXES");
+  const [tab, setTab] = useState<Tab>("Issues");
   const [tabProgress, setTabProgress] = useState(0);
   const [paused, setPaused] = useState(false);
   const [chapterIdx, setChapterIdx] = useState(1);
@@ -273,7 +274,7 @@ export default function MissionControlCinematic() {
         </div>
 
         <div className="mc-cinematic-body">
-          {tab === "ISSUES & FIXES" && (
+          {tab === "Issues" && (
             <div className="mc-issues-grid">
               <div
                 style={{
@@ -363,7 +364,7 @@ export default function MissionControlCinematic() {
             </div>
           )}
 
-          {tab === "CHANGES" && (
+          {tab === "Changes" && (
             <TerminalPanel label="CHANGES · audit spine" accent={colors.green}>
               <div style={{ padding: "8px 0" }}>
                 {CHANGES.map((c, i) => (
@@ -388,7 +389,7 @@ export default function MissionControlCinematic() {
             </TerminalPanel>
           )}
 
-          {tab === "ACTIVITY" && (
+          {tab === "Activity" && (
             <TerminalPanel label="activity feed" accent={colors.glow}>
               <div style={{ padding: "8px 0" }}>
                 {ACTIVITY.map((a, i) => (
@@ -409,7 +410,7 @@ export default function MissionControlCinematic() {
             </TerminalPanel>
           )}
 
-          {tab === "AI CALLS" && (
+          {tab === "AI calls" && (
             <TerminalPanel label="ai calls · attribution" accent={colors.github}>
               <div style={{ padding: "8px 0" }}>
                 {AI_CALLS.map((c, i) => (

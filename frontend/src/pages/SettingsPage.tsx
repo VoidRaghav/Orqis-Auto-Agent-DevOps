@@ -5,21 +5,34 @@ import type { GithubConnectInfo, IdeSetupInfo, WorkspaceSettings } from "@/lib/t
 import DashboardNav from "@/dashboard/components/DashboardNav";
 import OpsAmbientLayer from "@/dashboard/components/OpsAmbientLayer";
 import { resolveOpsMood } from "@/dashboard/components/ops-ambient";
-import { colors, mono, inter } from "@/lib/tokens";
-import { API_URL } from "@/lib/env";
-
-const C = {
-  green: colors.green,
-  amber: colors.amber,
-  red: colors.red,
-  blue: colors.github,
-  github: colors.github,
-  dim: colors.dim,
-  muted: colors.muted,
-  bg: colors.bg,
-  bg2: colors.bg2,
-  border: colors.border,
-};
+import { inter } from "@/lib/tokens";
+import { MULTI_TENANT } from "@/lib/env";
+import {
+  apiFetchOpts,
+  fetchApiKeys,
+  fetchAuditLog,
+  fetchGithubConnect,
+  fetchIdeSetup,
+  fetchInvites,
+  fetchMembers,
+  fetchSettings,
+  rowsToMap,
+  fetchWorkspaceSources,
+  saveSettings,
+  type ApiKeySummary,
+  type InviteSummary,
+  type MemberSummary,
+} from "@/lib/api";
+import SettingsGithubWizard from "@/components/settings/SettingsGithubWizard";
+import SettingsNotificationsCard from "@/components/settings/SettingsNotificationsCard";
+import SettingsTeamCard from "@/components/settings/SettingsTeamCard";
+import SettingsApiKeysCard from "@/components/settings/SettingsApiKeysCard";
+import SettingsAuditCard from "@/components/settings/SettingsAuditCard";
+import SettingsIdeCard from "@/components/settings/SettingsIdeCard";
+import SettingsRoutingCard from "@/components/settings/SettingsRoutingCard";
+import SettingsDeployCard from "@/components/settings/SettingsDeployCard";
+import SettingsAutomationCard from "@/components/settings/SettingsAutomationCard";
+import SettingsAdminCard from "@/components/settings/SettingsAdminCard";
 
 const ADMIN_TOKEN_KEY = "orqis_admin_token";
 
@@ -33,17 +46,26 @@ export default function SettingsPage() {
   const [status, setStatus] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [backendOk, setBackendOk] = useState(false);
+  const [apiKeys, setApiKeys] = useState<ApiKeySummary[]>([]);
+  const [newKey, setNewKey] = useState<string | null>(null);
+  const [auditLog, setAuditLog] = useState<Awaited<ReturnType<typeof fetchAuditLog>>>([]);
+  const [members, setMembers] = useState<MemberSummary[]>([]);
+  const [pendingInvites, setPendingInvites] = useState<InviteSummary[]>([]);
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [recentSources, setRecentSources] = useState<string[]>([]);
 
   useEffect(() => {
     setAdminToken(localStorage.getItem(ADMIN_TOKEN_KEY) ?? "");
   }, []);
 
+  const fetchOpts = useCallback(() => apiFetchOpts(adminToken), [adminToken]);
+
   const load = useCallback(async () => {
     try {
       const [g, s, ide] = await Promise.all([
-        fetch(`${API_URL}/integrations/github/connect`).then((r) => r.json()),
-        fetch(`${API_URL}/settings`).then((r) => r.json()),
-        fetch(`${API_URL}/integrations/ide-setup`).then((r) => r.json()),
+        fetchGithubConnect(adminToken),
+        fetchSettings(adminToken),
+        fetchIdeSetup(),
       ]);
       setGithub(g);
       setSettings(s);
@@ -55,11 +77,29 @@ export default function SettingsPage() {
         })),
       );
       setBackendOk(true);
+      setRecentSources(await fetchWorkspaceSources(adminToken));
+      if (MULTI_TENANT) {
+        const [keys, audit, mems, invites] = await Promise.all([
+          fetchApiKeys(adminToken),
+          fetchAuditLog(adminToken),
+          fetchMembers(adminToken),
+          fetchInvites(adminToken),
+        ]);
+        setApiKeys(keys);
+        setAuditLog(audit);
+        setMembers(mems);
+        setPendingInvites(
+          invites.map((inv) => ({
+            ...inv,
+            url: `${window.location.origin}/invite/${inv.token}`,
+          })),
+        );
+      }
     } catch {
       setBackendOk(false);
       setStatus({ kind: "err", msg: "Backend unreachable." });
     }
-  }, []);
+  }, [adminToken]);
 
   useEffect(() => {
     load();
@@ -69,16 +109,12 @@ export default function SettingsPage() {
       window.history.replaceState({}, "", "/settings");
       setTimeout(load, 2000);
     }
-  }, [load]);
-
-  function rowsToMap(rows: { source: string; repo: string }[]): Record<string, string> {
-    const out: Record<string, string> = {};
-    for (const { source, repo } of rows) {
-      const s = source.trim();
-      if (s && repo) out[s] = repo;
+    if (params.get("github") === "app_registered") {
+      setStatus({ kind: "ok", msg: "GitHub App registered — install it on your repos next." });
+      window.history.replaceState({}, "", "/settings");
+      setTimeout(load, 1500);
     }
-    return out;
-  }
+  }, [load]);
 
   async function save() {
     if (!settings) return;
@@ -93,15 +129,10 @@ export default function SettingsPage() {
         hot_reload_webhook_url: settings.hot_reload_webhook_url,
         auto_merge_enabled: settings.auto_merge_enabled,
         pr_low_confidence: settings.pr_low_confidence,
+        notification_webhook_url: settings.notification_webhook_url ?? "",
+        notification_slack_url: settings.notification_slack_url ?? "",
       };
-      const r = await fetch(`${API_URL}/settings`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          ...(adminToken ? { "X-Orqis-Admin-Token": adminToken } : {}),
-        },
-        body: JSON.stringify(body),
-      });
+      const r = await saveSettings(body, adminToken);
       if (!r.ok) {
         setStatus({ kind: "err", msg: await r.text() });
       } else {
@@ -126,10 +157,15 @@ export default function SettingsPage() {
       mcpServers: {
         orqis: {
           ...server,
-          env: {
-            ...server.env,
-            ORQIS_ADMIN_TOKEN: adminToken || server.env?.ORQIS_ADMIN_TOKEN || "",
-          },
+          env: MULTI_TENANT
+            ? {
+                ...server.env,
+                ORQIS_API_KEY: newKey || server.env?.ORQIS_API_KEY || "<workspace-api-key>",
+              }
+            : {
+                ...server.env,
+                ORQIS_ADMIN_TOKEN: adminToken || server.env?.ORQIS_ADMIN_TOKEN || "",
+              },
         },
       },
     };
@@ -150,289 +186,96 @@ export default function SettingsPage() {
     <div className="settings-page" data-mood={mood} style={{ ...inter }}>
       <OpsAmbientLayer mood={mood} />
       <div className="ops-page-content">
-      <DashboardNav connected={backendOk} github={github} />
+        <DashboardNav connected={backendOk} github={github} />
 
-      <div className="settings-wrap">
-        <header className="settings-header">
-          <h1 className="settings-title">Settings</h1>
-          <p className="settings-lead">GitHub PRs · repo routing · automation</p>
-        </header>
+        <div className="settings-wrap">
+          <header className="settings-header">
+            <h1 className="settings-title">Settings</h1>
+            <p className="settings-lead">GitHub PRs · repo routing · automation</p>
+          </header>
 
-        {status && (
-          <div className={`settings-banner settings-banner-${status.kind}`}>{status.msg}</div>
-        )}
+          {status && (
+            <div className={`settings-banner settings-banner-${status.kind}`}>{status.msg}</div>
+          )}
 
-        <div className="settings-grid">
-          <Card title="GitHub" accent={C.github}>
-            {!github?.configured && (
-              <Hint tone="warn">Set GITHUB_APP_* env vars on backend, then restart.</Hint>
+          <div className="settings-grid">
+            <SettingsGithubWizard
+              github={github}
+              fetchOpts={fetchOpts}
+              onReload={load}
+              onError={(msg) => setStatus({ kind: "err", msg })}
+            />
+
+            {MULTI_TENANT && (
+              <SettingsTeamCard
+                members={members}
+                pendingInvites={pendingInvites}
+                inviteUrl={inviteUrl}
+                fetchOpts={fetchOpts}
+                onInviteCreated={setInviteUrl}
+                onReload={load}
+                onError={(msg) => setStatus({ kind: "err", msg })}
+              />
             )}
-            {github?.connected ? (
-              <Row label="Status" value={`Connected · ${github.repos.length} repo${github.repos.length === 1 ? "" : "s"}`} tone={C.green} />
-            ) : (
-              github?.configured && (
-                <a href={github.install_url} className="settings-btn settings-btn-github">
-                  Connect GitHub
-                </a>
-              )
-            )}
-            {github?.account_login && <Row label="Account" value={github.account_login} />}
-            {grantedRepos.length > 0 && (
-              <div className="settings-repo-chips">
-                {grantedRepos.map((r) => (
-                  <span key={r} className="settings-chip">
-                    {r}
-                  </span>
-                ))}
-              </div>
-            )}
-          </Card>
 
-          <Card title="IDE / MCP" accent={C.green}>
-            <Hint>One stdio server · all editors</Hint>
-            {ideSetup && (
+            {MULTI_TENANT && (
+              <SettingsApiKeysCard
+                apiKeys={apiKeys}
+                newKey={newKey}
+                fetchOpts={fetchOpts}
+                onNewKey={setNewKey}
+                onReload={load}
+              />
+            )}
+
+            {MULTI_TENANT && <SettingsAuditCard auditLog={auditLog} />}
+
+            <SettingsIdeCard
+              ideSetup={ideSetup}
+              adminToken={adminToken}
+              newKey={newKey}
+              mcpCopied={mcpCopied}
+              onCopyMcp={copyMcpConfig}
+            />
+
+            {settings && (
+              <SettingsNotificationsCard
+                settings={settings}
+                onSettingsChange={setSettings}
+                fetchOpts={fetchOpts}
+                onTestResult={(ok, msg) =>
+                  setStatus({ kind: ok ? "ok" : "err", msg })
+                }
+              />
+            )}
+
+            {settings && (
               <>
-                <Row label="Command" value={ideSetup.mcp_command} mono />
-                <button type="button" onClick={copyMcpConfig} className="settings-btn settings-btn-ghost">
-                  {mcpCopied ? "Copied" : "Copy .mcp.json"}
-                </button>
-                <ul className="settings-ide-list">
-                  {ideSetup.ides.map((row) => (
-                    <li key={row.name}>
-                      <span>{row.name}</span>
-                      <span className="settings-ide-path">{row.config}</span>
-                    </li>
-                  ))}
-                </ul>
+                <SettingsRoutingCard
+                  settings={settings}
+                  grantedRepos={grantedRepos}
+                  githubConnected={githubConnected}
+                  mapRows={mapRows}
+                  recentSources={recentSources}
+                  onSettingsChange={setSettings}
+                  onMapRowsChange={setMapRows}
+                />
+                <SettingsDeployCard settings={settings} onSettingsChange={setSettings} />
+                <SettingsAutomationCard settings={settings} onSettingsChange={setSettings} />
+                <SettingsAdminCard adminToken={adminToken} onAdminTokenChange={setAdminToken} />
               </>
             )}
-          </Card>
+          </div>
 
           {settings && (
-            <>
-              <Card title="Repositories" accent={C.github} wide>
-                {!githubConnected ? (
-                  <Hint tone="warn">Connect GitHub first.</Hint>
-                ) : grantedRepos.length === 0 ? (
-                  <Hint tone="warn">Grant at least one repo in GitHub App settings.</Hint>
-                ) : (
-                  <>
-                    <Field label="Default repo">
-                      <RepoSelect
-                        repos={grantedRepos}
-                        value={settings.default_repo}
-                        placeholder={grantedRepos.length === 1 ? grantedRepos[0] : "Select…"}
-                        onChange={(repo) => setSettings({ ...settings, default_repo: repo })}
-                      />
-                    </Field>
-
-                    <div className="settings-divider" />
-
-                    <Field label="Source → repo (optional)">
-                      {mapRows.length === 0 && <span className="settings-muted">Uses default for all sources.</span>}
-                      {mapRows.map((row, i) => (
-                        <div key={i} className="settings-map-row">
-                          <input
-                            value={row.source}
-                            onChange={(e) => {
-                              const next = [...mapRows];
-                              next[i] = { ...next[i], source: e.target.value };
-                              setMapRows(next);
-                            }}
-                            className="settings-input"
-                            placeholder="source"
-                            spellCheck={false}
-                          />
-                          <span className="settings-arrow">→</span>
-                          <RepoSelect
-                            repos={grantedRepos}
-                            value={row.repo}
-                            placeholder="repo"
-                            onChange={(repo) => {
-                              const next = [...mapRows];
-                              next[i] = { ...next[i], repo };
-                              setMapRows(next);
-                            }}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setMapRows(mapRows.filter((_, n) => n !== i))}
-                            className="settings-icon-btn"
-                            aria-label="Remove"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={() => setMapRows([...mapRows, { source: "", repo: "" }])}
-                        className="settings-link-btn"
-                      >
-                        + Add mapping
-                      </button>
-                    </Field>
-                  </>
-                )}
-              </Card>
-
-              <Card title="Deploy" accent={C.amber}>
-                <Field label="Hot-reload URL">
-                  <input
-                    value={settings.hot_reload_webhook_url}
-                    onChange={(e) => setSettings({ ...settings, hot_reload_webhook_url: e.target.value })}
-                    className="settings-input"
-                    placeholder="https://app.example.com/orqis/reload"
-                  />
-                </Field>
-                <Field label="Default branch">
-                  <input
-                    value={settings.default_branch}
-                    onChange={(e) => setSettings({ ...settings, default_branch: e.target.value })}
-                    className="settings-input settings-input-sm"
-                  />
-                </Field>
-              </Card>
-
-              <Card title="Automation" accent={C.amber}>
-                <Toggle
-                  label="Low-confidence PRs"
-                  checked={settings.pr_low_confidence}
-                  onChange={(v) => setSettings({ ...settings, pr_low_confidence: v })}
-                />
-                <Toggle
-                  label="Auto-merge (config only)"
-                  checked={settings.auto_merge_enabled}
-                  onChange={(v) => setSettings({ ...settings, auto_merge_enabled: v })}
-                  danger
-                />
-              </Card>
-
-              <Card title="Admin" accent={C.dim}>
-                <Field label="Token">
-                  <input
-                    value={adminToken}
-                    onChange={(e) => setAdminToken(e.target.value)}
-                    type="password"
-                    className="settings-input"
-                    placeholder="ORQIS_ADMIN_TOKEN"
-                  />
-                </Field>
-                <Hint>Stored in browser only.</Hint>
-              </Card>
-            </>
+            <div className="settings-footer">
+              <button type="button" onClick={save} disabled={saving} className="settings-btn settings-btn-save">
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
           )}
         </div>
-
-        {settings && (
-          <div className="settings-footer">
-            <button type="button" onClick={save} disabled={saving} className="settings-btn settings-btn-save">
-              {saving ? "Saving…" : "Save"}
-            </button>
-          </div>
-        )}
-      </div>
       </div>
     </div>
-  );
-}
-
-function Card({
-  title,
-  children,
-  accent,
-  wide,
-}: {
-  title: string;
-  children: React.ReactNode;
-  accent?: string;
-  wide?: boolean;
-}) {
-  return (
-    <section className={`settings-card corner-brackets${wide ? " settings-card-wide" : ""}`} style={{ borderLeftColor: accent }}>
-      <div className="settings-card-head" style={{ borderLeftColor: accent }}>
-        <span style={{ ...mono }}>{title}</span>
-      </div>
-      <div className="settings-card-body">{children}</div>
-    </section>
-  );
-}
-
-function Row({ label, value, tone, mono: isMono }: { label: string; value: string; tone?: string; mono?: boolean }) {
-  return (
-    <div className="settings-row">
-      <span className="settings-row-label">{label}</span>
-      <span className="settings-row-value" style={{ color: tone, ...(isMono ? mono : {}) }}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function Hint({ children, tone }: { children: React.ReactNode; tone?: "warn" }) {
-  return <p className={`settings-hint${tone === "warn" ? " settings-hint-warn" : ""}`}>{children}</p>;
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="settings-field">
-      <span className="settings-field-label">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function RepoSelect({
-  repos,
-  value,
-  placeholder,
-  onChange,
-}: {
-  repos: string[];
-  value: string;
-  placeholder: string;
-  onChange: (repo: string) => void;
-}) {
-  return (
-    <select value={value || ""} onChange={(e) => onChange(e.target.value)} className="settings-select">
-      <option value="">{placeholder}</option>
-      {repos.map((r) => (
-        <option key={r} value={r}>
-          {r}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function Toggle({
-  label,
-  checked,
-  onChange,
-  danger,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  danger?: boolean;
-}) {
-  const accent = danger ? C.red : C.green;
-  return (
-    <label className="settings-toggle">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className="settings-switch"
-        style={{
-          borderColor: checked ? accent : C.border,
-          background: checked ? `${accent}30` : "transparent",
-        }}
-      >
-        <span className="settings-switch-knob" style={{ left: checked ? 18 : 2, background: checked ? accent : C.dim }} />
-      </button>
-      <span className="settings-toggle-label">{label}</span>
-    </label>
   );
 }

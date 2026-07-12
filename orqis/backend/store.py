@@ -13,15 +13,16 @@ import asyncio
 import json
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Union
 
 import redis.asyncio as aioredis
 
 from .. import config
 from ..backend import durable
 from ..backend.models import ChangeLogEntry, Incident, IncidentStatus, LogEvent, TraceEvent
+from .tenancy import get_workspace_id, tenant_prefix
 
-_redis: Optional[aioredis.Redis] = None
+_redis_by_loop: dict[int, aioredis.Redis] = {}
 
 # Per-incident locks serialise the read-modify-write in update_incident so
 # the async interpretation task can't clobber fields written by the locate
@@ -29,31 +30,63 @@ _redis: Optional[aioredis.Redis] = None
 _incident_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
+def _tp() -> str:
+    return tenant_prefix()
+
+
+def _settings_key() -> str:
+    return f"{_tp()}settings"
+
+
 async def get_redis() -> aioredis.Redis:
-    global _redis
-    if _redis is None:
-        _redis = await aioredis.from_url(config.REDIS_URL, decode_responses=True)
-    return _redis
+    loop_id = id(asyncio.get_running_loop())
+    client = _redis_by_loop.get(loop_id)
+    if client is None:
+        client = await aioredis.from_url(config.REDIS_URL, decode_responses=True)
+        _redis_by_loop[loop_id] = client
+    return client
+
+
+async def reset_redis_connection() -> None:
+    """Close Redis pools for all cached event loops (test harness)."""
+    for loop_id, client in list(_redis_by_loop.items()):
+        await client.aclose()
+        del _redis_by_loop[loop_id]
+
+
+async def scan_keys(pattern: str, *, count: int = 100) -> list[str]:
+    """Iterate Redis keys matching `pattern` without blocking KEYS."""
+    r = await get_redis()
+    found: list[str] = []
+    cursor: Union[int, str] = 0
+    while True:
+        cursor, batch = await r.scan(cursor=cursor, match=pattern, count=count)
+        found.extend(batch)
+        if cursor == 0 or cursor == "0":
+            break
+    return found
 
 
 async def save_event(event: LogEvent) -> None:
     r = await get_redis()
-    key = f"orqis:event:{event.id}"
+    tp = _tp()
+    key = f"{tp}event:{event.id}"
     score = event.timestamp.timestamp()
+    timeline = f"{tp}events:timeline"
     payload = event.model_dump_json()
 
     pipe = r.pipeline()
     pipe.set(key, payload, ex=86400)  # TTL: 24h
-    pipe.zadd("orqis:events:timeline", {event.id: score})
+    pipe.zadd(timeline, {event.id: score})
     # Trim the timeline to the most recent N events
-    pipe.zremrangebyrank("orqis:events:timeline", 0, -(config.REDIS_EVENT_LIMIT + 1))
+    pipe.zremrangebyrank(timeline, 0, -(config.REDIS_EVENT_LIMIT + 1))
     await pipe.execute()
 
 
 async def update_interpretation(event_id: str, interpretation: str) -> Optional[LogEvent]:
     """Patch the interpretation field on an existing stored event."""
     r = await get_redis()
-    key = f"orqis:event:{event_id}"
+    key = f"{_tp()}event:{event_id}"
     raw = await r.get(key)
     if not raw:
         return None
@@ -67,20 +100,22 @@ async def update_interpretation(event_id: str, interpretation: str) -> Optional[
 
 async def save_trace_event(event: TraceEvent) -> None:
     r = await get_redis()
-    key = f"orqis:trace:{event.id}"
+    tp = _tp()
+    key = f"{tp}trace:{event.id}"
     score = event.timestamp.timestamp()
+    timeline = f"{tp}traces:timeline"
     payload = event.model_dump_json()
 
     pipe = r.pipeline()
     pipe.set(key, payload, ex=86400)
-    pipe.zadd("orqis:traces:timeline", {event.id: score})
-    pipe.zremrangebyrank("orqis:traces:timeline", 0, -(config.REDIS_EVENT_LIMIT + 1))
+    pipe.zadd(timeline, {event.id: score})
+    pipe.zremrangebyrank(timeline, 0, -(config.REDIS_EVENT_LIMIT + 1))
     await pipe.execute()
 
 
 async def update_trace_interpretation(event_id: str, interpretation: str) -> bool:
     r = await get_redis()
-    key = f"orqis:trace:{event_id}"
+    key = f"{_tp()}trace:{event_id}"
     raw = await r.get(key)
     if not raw:
         return False
@@ -92,12 +127,13 @@ async def update_trace_interpretation(event_id: str, interpretation: str) -> boo
 
 async def get_recent_traces(limit: int = 100) -> list[TraceEvent]:
     r = await get_redis()
-    ids = await r.zrange("orqis:traces:timeline", -limit, -1)
+    timeline = f"{_tp()}traces:timeline"
+    ids = await r.zrange(timeline, -limit, -1)
     if not ids:
         return []
     pipe = r.pipeline()
     for tid in ids:
-        pipe.get(f"orqis:trace:{tid}")
+        pipe.get(f"{_tp()}trace:{tid}")
     raws = await pipe.execute()
     events = []
     for raw in raws:
@@ -114,11 +150,13 @@ _INCIDENT_TTL_SECONDS = 604800  # 7 days
 
 async def save_incident(incident: Incident) -> None:
     r = await get_redis()
-    key = f"orqis:incident:{incident.id}"
+    tp = _tp()
+    key = f"{tp}incident:{incident.id}"
     score = incident.created_at.timestamp()
+    timeline = f"{tp}incidents:timeline"
     pipe = r.pipeline()
     pipe.set(key, incident.model_dump_json(), ex=_INCIDENT_TTL_SECONDS)
-    pipe.zadd("orqis:incidents:timeline", {incident.id: score})
+    pipe.zadd(timeline, {incident.id: score})
     await pipe.execute()
     await durable.upsert_incident(incident)
 
@@ -133,7 +171,7 @@ async def update_incident(incident_id: str, **fields) -> Optional[Incident]:
     """
     async with _incident_locks[incident_id]:
         r = await get_redis()
-        key = f"orqis:incident:{incident_id}"
+        key = f"{_tp()}incident:{incident_id}"
         raw = await r.get(key)
         if not raw:
             return None
@@ -147,23 +185,23 @@ async def update_incident(incident_id: str, **fields) -> Optional[Incident]:
 
 async def get_incident(incident_id: str) -> Optional[Incident]:
     r = await get_redis()
-    raw = await r.get(f"orqis:incident:{incident_id}")
+    raw = await r.get(f"{_tp()}incident:{incident_id}")
     return Incident(**json.loads(raw)) if raw else None
 
 
 async def clear_all() -> dict:
     """
-    Delete every stored incident, log event, and trace event. Used by the demo
-    reset so the dashboard (incidents, ACTIVITY log stream, AI CALLS / cost)
-    starts completely clean. Returns a count per kind.
+    Delete every stored incident, log event, and trace event for the active
+    workspace. Used by the demo reset so the dashboard starts clean.
     """
     r = await get_redis()
+    tp = _tp()
     counts: dict[str, int] = {}
     for kind, prefix, timeline in (
-        ("incidents", "orqis:incident:", "orqis:incidents:timeline"),
-        ("events", "orqis:event:", "orqis:events:timeline"),
-        ("traces", "orqis:trace:", "orqis:traces:timeline"),
-        ("changes", "orqis:change:", "orqis:changes:timeline"),
+        ("incidents", f"{tp}incident:", f"{tp}incidents:timeline"),
+        ("events", f"{tp}event:", f"{tp}events:timeline"),
+        ("traces", f"{tp}trace:", f"{tp}traces:timeline"),
+        ("changes", f"{tp}change:", f"{tp}changes:timeline"),
     ):
         ids = await r.zrange(timeline, 0, -1)
         pipe = r.pipeline()
@@ -178,12 +216,13 @@ async def clear_all() -> dict:
 
 async def get_recent_incidents(limit: int = 50) -> list[Incident]:
     r = await get_redis()
-    ids = await r.zrange("orqis:incidents:timeline", -limit, -1)
+    timeline = f"{_tp()}incidents:timeline"
+    ids = await r.zrange(timeline, -limit, -1)
     if not ids:
         return []
     pipe = r.pipeline()
     for iid in ids:
-        pipe.get(f"orqis:incident:{iid}")
+        pipe.get(f"{_tp()}incident:{iid}")
     raws = await pipe.execute()
     incidents = []
     for raw in raws:
@@ -198,14 +237,14 @@ async def get_recent_incidents(limit: int = 50) -> list[Incident]:
 async def get_recent_events(limit: int = 100) -> list[LogEvent]:
     """Return the most recent `limit` events, newest last."""
     r = await get_redis()
-    # zrange with rev=True gives newest first, then we reverse
-    ids = await r.zrange("orqis:events:timeline", -limit, -1)
+    timeline = f"{_tp()}events:timeline"
+    ids = await r.zrange(timeline, -limit, -1)
     if not ids:
         return []
 
     pipe = r.pipeline()
     for event_id in ids:
-        pipe.get(f"orqis:event:{event_id}")
+        pipe.get(f"{_tp()}event:{event_id}")
     raws = await pipe.execute()
 
     events = []
@@ -223,24 +262,27 @@ async def get_recent_events(limit: int = 100) -> list[LogEvent]:
 
 async def save_change(entry: ChangeLogEntry) -> None:
     r = await get_redis()
-    key = f"orqis:change:{entry.id}"
+    tp = _tp()
+    key = f"{tp}change:{entry.id}"
     score = entry.timestamp.timestamp()
+    timeline = f"{tp}changes:timeline"
     pipe = r.pipeline()
     pipe.set(key, entry.model_dump_json(), ex=_INCIDENT_TTL_SECONDS)
-    pipe.zadd("orqis:changes:timeline", {entry.id: score})
-    pipe.zremrangebyrank("orqis:changes:timeline", 0, -(config.REDIS_EVENT_LIMIT + 1))
+    pipe.zadd(timeline, {entry.id: score})
+    pipe.zremrangebyrank(timeline, 0, -(config.REDIS_EVENT_LIMIT + 1))
     await pipe.execute()
     await durable.record_change(entry)
 
 
 async def get_recent_changes(limit: int = 100) -> list[ChangeLogEntry]:
     r = await get_redis()
-    ids = await r.zrange("orqis:changes:timeline", -limit, -1)
+    timeline = f"{_tp()}changes:timeline"
+    ids = await r.zrange(timeline, -limit, -1)
     if not ids:
         return []
     pipe = r.pipeline()
     for cid in ids:
-        pipe.get(f"orqis:change:{cid}")
+        pipe.get(f"{_tp()}change:{cid}")
     raws = await pipe.execute()
     out = []
     for raw in raws:
@@ -261,19 +303,19 @@ async def persist_incident(incident_id: str) -> None:
     merge, and the merge webhook must still find the incident.
     """
     r = await get_redis()
-    await r.persist(f"orqis:incident:{incident_id}")
+    await r.persist(f"{_tp()}incident:{incident_id}")
 
 
 async def set_incident_ttl(incident_id: str, seconds: int = _INCIDENT_TTL_SECONDS) -> None:
     """Re-arm the rolling TTL once an incident reaches a terminal state."""
     r = await get_redis()
-    await r.expire(f"orqis:incident:{incident_id}", seconds)
+    await r.expire(f"{_tp()}incident:{incident_id}", seconds)
 
 
 # --- PR -> incident reverse index (P3) ---------------------------------------
 
 def _pr_index_key(repo: str, pr_number: int) -> str:
-    return f"orqis:pr:{repo}#{pr_number}"
+    return f"{_tp()}pr:{repo}#{pr_number}"
 
 
 async def set_pr_index(repo: str, pr_number: int, incident_id: str) -> None:
@@ -304,7 +346,7 @@ async def finalize_pr_open(
     """
     async with _incident_locks[incident_id]:
         r = await get_redis()
-        key = f"orqis:incident:{incident_id}"
+        key = f"{_tp()}incident:{incident_id}"
         raw = await r.get(key)
         if not raw:
             return None
@@ -328,18 +370,18 @@ async def finalize_pr_open(
 async def dedup_get(fingerprint: str) -> Optional[str]:
     """Return the incident_id for a fingerprint still inside the dedup window."""
     r = await get_redis()
-    return await r.get(f"orqis:fp:{fingerprint}")
+    return await r.get(f"{_tp()}fp:{fingerprint}")
 
 
 async def dedup_set(fingerprint: str, incident_id: str, ttl_seconds: int) -> None:
     """Record a fingerprint -> incident_id mapping with the dedup-window TTL."""
     r = await get_redis()
-    await r.set(f"orqis:fp:{fingerprint}", incident_id, ex=ttl_seconds)
+    await r.set(f"{_tp()}fp:{fingerprint}", incident_id, ex=ttl_seconds)
 
 
 async def dedup_clear(fingerprint: str) -> None:
     r = await get_redis()
-    await r.delete(f"orqis:fp:{fingerprint}")
+    await r.delete(f"{_tp()}fp:{fingerprint}")
 
 
 # --- Webhook delivery replay dedup (S6) --------------------------------------
@@ -352,34 +394,33 @@ async def delivery_seen(guid: str, ttl_seconds: int = 86400) -> bool:
     if not guid:
         return False
     r = await get_redis()
-    # SET NX returns True only when the key did not exist.
+    # Global dedup — webhooks arrive before workspace context is known.
     was_new = await r.set(f"orqis:delivery:{guid}", "1", nx=True, ex=ttl_seconds)
     return not bool(was_new)
 
 
 # --- Workspace settings (P2 — non-expiring) ----------------------------------
 
-_SETTINGS_KEY = "orqis:settings:workspace"
-
 _DEFAULT_SETTINGS: dict = {
     "installation_id": None,
     "account_login": None,
     "repos": [],
     "source_repo_map": {},
-    # Repo used for log sources without an explicit mapping. Must be one of the
-    # granted `repos`. Empty falls back to the single-repo case in repo_for_source.
     "default_repo": "",
     "default_branch": "main",
+    "repo_default_branches": {},
     "hot_reload_webhook_url": "",
     "auto_merge_enabled": False,
     "pr_low_confidence": False,
+    "notification_webhook_url": "",
+    "notification_slack_url": "",
 }
 
 
 async def get_settings() -> dict:
     """Return workspace settings, merged over defaults. Never expires."""
     r = await get_redis()
-    raw = await r.get(_SETTINGS_KEY)
+    raw = await r.get(_settings_key())
     settings = dict(_DEFAULT_SETTINGS)
     if raw:
         try:
@@ -394,6 +435,6 @@ async def save_settings(patch: dict) -> dict:
     r = await get_redis()
     current = await get_settings()
     current.update({k: v for k, v in patch.items() if k in _DEFAULT_SETTINGS})
-    await r.set(_SETTINGS_KEY, json.dumps(current))
+    await r.set(_settings_key(), json.dumps(current))
     await durable.save_settings(current)
     return current

@@ -149,5 +149,28 @@ async def list_installation_repos(installation_id: int) -> list[str]:
     return repos
 
 
+async def installation_account_login(installation_id: int) -> Optional[str]:
+    """Return the GitHub account login for an installation (org or user)."""
+    jwt_token = _app_jwt()
+    if jwt_token is None:
+        return None
+    headers = {
+        "Authorization": f"Bearer {jwt_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.get(
+                f"{_GITHUB_API}/app/installations/{installation_id}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            account = resp.json().get("account") or {}
+            return account.get("login")
+    except Exception:
+        return None
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)

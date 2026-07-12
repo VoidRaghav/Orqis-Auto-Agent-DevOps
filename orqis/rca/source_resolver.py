@@ -110,7 +110,10 @@ async def _resolve_frames(
     if not await client.repo_accessible(installation_id, repo):
         return None
 
-    default = await client.get_default_branch(installation_id, repo)
+    from . import branches
+
+    branch_override = branches.resolve_base_branch(settings, repo)
+    default = await client.get_default_branch(installation_id, repo, branch=branch_override)
     if default is None:
         return None
     base_branch, base_sha = default

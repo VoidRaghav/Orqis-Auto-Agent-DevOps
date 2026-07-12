@@ -153,3 +153,28 @@ def _fallback(error_type: Optional[ErrorType]) -> str:
 # Public alias — used by log_reader to set an instant interpretation
 # before the async LLM call resolves.
 fallback = _fallback
+
+
+async def check_readiness() -> dict:
+    """Probe configured LLM provider — used by /health/ready."""
+    provider = config.LLM_PROVIDER
+    if provider == "anthropic":
+        ok = bool(config.ANTHROPIC_API_KEY)
+        return {"ok": ok, "provider": provider, "detail": "api key set" if ok else "missing ANTHROPIC_API_KEY"}
+    if provider == "ollama":
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as http:
+                r = await http.get(f"{config.OLLAMA_BASE_URL.rstrip('/')}/api/tags")
+                if r.status_code == 200:
+                    models = [m.get("name", "") for m in r.json().get("models", [])]
+                    want = config.OLLAMA_MODEL
+                    has_model = any(want in m for m in models)
+                    return {
+                        "ok": has_model,
+                        "provider": provider,
+                        "detail": f"model {want!r} {'found' if has_model else 'not pulled'}",
+                    }
+                return {"ok": False, "provider": provider, "detail": f"ollama HTTP {r.status_code}"}
+        except Exception as exc:
+            return {"ok": False, "provider": provider, "detail": str(exc)}
+    return {"ok": True, "provider": provider, "detail": "unknown provider — skipped"}

@@ -12,11 +12,13 @@ open_fix_pr ordering (P1/P3/P4):
 so the merge webhook can always resolve the incident, even if it fires fast.
 """
 
+import asyncio
 import re
 from typing import Optional
 
 from ...backend import store, ws_manager
 from ...backend.models import Incident, IncidentStatus
+from ...backend.tenancy import get_workspace_id
 from . import apply_diff, client
 
 _BRANCH_PREFIX = "orqis/fix-"
@@ -41,7 +43,22 @@ _SECRET_PATTERNS = [
     re.compile(r"(?i)(password\s*[=:]\s*)\S+"),
     re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]+"),
     re.compile(r"sk-[A-Za-z0-9]{16,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"(?i)ghp_[A-Za-z0-9]{20,}"),
+    re.compile(r"(?i)gho_[A-Za-z0-9]{20,}"),
+    re.compile(r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----"),
 ]
+
+
+def scan_for_secrets(text: str) -> list[str]:
+    """Return human-readable findings for secret-like content in diffs/PR bodies."""
+    if not text:
+        return []
+    findings: list[str] = []
+    for pat in _SECRET_PATTERNS:
+        if pat.search(text):
+            findings.append(f"matched pattern: {pat.pattern[:40]}")
+    return findings
 
 
 def _human_error(incident: Incident) -> str:
@@ -85,6 +102,11 @@ def _pr_body(incident: Incident) -> str:
         lines.append(f"**Location:** `{incident.repo_relative_path}:{incident.error_line}`")
     if incident.confidence is not None:
         lines.append(f"**Confidence:** {incident.confidence}/100 ({incident.fix_method or 'llm'})")
+    from ...rca.diff_split import split_by_file
+
+    changed = [p for p, _ in split_by_file(incident.diff or "")]
+    if len(changed) > 1:
+        lines.append("**Files changed:** " + ", ".join(f"`{p}`" for p in changed))
     if incident.validation_warnings:
         lines.append("")
         lines.append("**Warnings:** " + "; ".join(incident.validation_warnings))
@@ -123,7 +145,15 @@ async def open_fix_pr(incident: Incident) -> None:
     """
     if incident.pr_number:
         return  # already has a PR (A4)
-    if not incident.diff or not incident.repo_full_name or not incident.repo_relative_path:
+    if not incident.diff or not incident.repo_full_name:
+        return
+
+    secret_hits = scan_for_secrets(incident.diff)
+    if secret_hits:
+        await _fail(
+            IncidentStatus.PR_FAILED,
+            "diff blocked by secret scan: " + "; ".join(secret_hits[:3]),
+        )
         return
 
     settings = await store.get_settings()
@@ -139,7 +169,7 @@ async def open_fix_pr(incident: Incident) -> None:
         )
         if updated:
             await ws_manager.manager.broadcast(
-                "incident.updated", updated.model_dump(mode="json")
+                "incident.updated", updated.model_dump(mode="json"), workspace_id=get_workspace_id()
             )
             from ...backend import changelog
 
@@ -158,7 +188,9 @@ async def open_fix_pr(incident: Incident) -> None:
 
     # Re-fetch the file at current default-branch HEAD and apply the diff in
     # memory. If it no longer applies, prod is behind main — flag stale (A6).
-    base_branch_override = settings.get("default_branch") or None
+    from . import branches
+
+    base_branch_override = branches.resolve_base_branch(settings, repo)
     default = await client.get_default_branch(
         installation_id, repo, branch=base_branch_override
     )
@@ -167,34 +199,47 @@ async def open_fix_pr(incident: Incident) -> None:
         return
     base_branch, head_sha = default
 
-    fetched = await client.get_file(installation_id, repo, incident.repo_relative_path, head_sha)
-    if fetched is None:
-        await _fail(IncidentStatus.PR_FAILED, "could not fetch file from GitHub (too large or missing)")
-        return
-    current_content, _sha = fetched
+    from ...rca.diff_split import split_by_file
 
-    normalized_diff = apply_diff.rewrite_diff_paths(incident.diff, incident.repo_relative_path)
-    try:
-        patched = apply_diff.apply_to_text(current_content, normalized_diff)
-    except apply_diff.StaleDiffError as e:
-        await _fail(IncidentStatus.PATCH_STALE, f"prod may be behind {base_branch}: {e}")
+    segments = split_by_file(incident.diff)
+    if not segments:
+        await _fail(IncidentStatus.PR_FAILED, "no parseable file paths in diff")
         return
 
-    # Re-run the full validation pipeline on the patched content before commit (C4).
     from ...rca.validator import validate
 
-    validation = await validate(
-        normalized_diff,
-        incident.repo_relative_path,
-        source_text=current_content,
-    )
-    if not validation.valid:
-        await _fail(
-            IncidentStatus.PR_FAILED,
-            "patched content failed validation: " + "; ".join(validation.errors[:3]),
-        )
-        return
-    patched = validation.patched_source or patched
+    files_to_commit: list[tuple[str, str]] = []
+    for path, seg_diff in segments:
+        normalized = apply_diff.rewrite_diff_paths(seg_diff, path)
+        fetched = await client.get_file(installation_id, repo, path, head_sha)
+        if fetched is None:
+            await _fail(
+                IncidentStatus.PR_FAILED,
+                f"could not fetch {path} from GitHub (too large or missing)",
+            )
+            return
+        current_content, _sha = fetched
+        try:
+            patched = apply_diff.apply_to_text(current_content, normalized)
+        except apply_diff.StaleDiffError as e:
+            await _fail(
+                IncidentStatus.PATCH_STALE,
+                f"prod may be behind {base_branch} ({path}): {e}",
+            )
+            return
+        validation = await validate(normalized, path, source_text=current_content)
+        if not validation.valid:
+            await _fail(
+                IncidentStatus.PR_FAILED,
+                f"{path} failed validation: " + "; ".join(validation.errors[:3]),
+            )
+            return
+        files_to_commit.append((path, validation.patched_source or patched))
+
+    primary_path = incident.repo_relative_path or files_to_commit[0][0]
+    if not incident.repo_relative_path:
+        await store.update_incident(incident.id, repo_relative_path=primary_path)
+        incident = await store.get_incident(incident.id) or incident
 
     branch = f"{_BRANCH_PREFIX}{incident.id[:8]}"
     if not _branch_safe(branch):
@@ -208,9 +253,8 @@ async def open_fix_pr(incident: Incident) -> None:
     branch = created
 
     commit_msg = _pr_title(incident)
-    commit_sha = await client.commit_file(
-        installation_id, repo, branch,
-        incident.repo_relative_path, patched, commit_msg, head_sha,
+    commit_sha = await client.commit_files(
+        installation_id, repo, branch, files_to_commit, commit_msg, head_sha,
     )
     if commit_sha is None:
         await _fail(IncidentStatus.PR_FAILED, "could not commit fix")
@@ -239,7 +283,7 @@ async def open_fix_pr(incident: Incident) -> None:
     )
     if updated:
         await ws_manager.manager.broadcast(
-            "incident.pr_opened", updated.model_dump(mode="json")
+            "incident.pr_opened", updated.model_dump(mode="json"), workspace_id=get_workspace_id()
         )
         from ...backend import changelog
 
@@ -248,6 +292,9 @@ async def open_fix_pr(incident: Incident) -> None:
             updated,
             f"Opened fix PR #{pr_number} on {repo}",
         )
+        from ...notifications import dispatcher
+
+        asyncio.create_task(dispatcher.notify("incident.pr_opened", updated))
 
     # Phase 2 — auto-merge deterministic config-only fixes.
     if updated and is_auto_merge_eligible(updated, settings):
@@ -310,7 +357,7 @@ async def mark_resolved(
 
     if updated:
         await ws_manager.manager.broadcast(
-            "incident.resolved", updated.model_dump(mode="json")
+            "incident.resolved", updated.model_dump(mode="json"), workspace_id=get_workspace_id()
         )
         from ...backend import changelog
 

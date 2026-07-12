@@ -54,7 +54,8 @@ export default function Dashboard() {
   }, [events[0]?.id]);
 
   const openCount = incidents.filter((i) => ACTIVE_STATUSES.has(i.status)).length;
-  const totalCost = traces.reduce((s, t) => s + (t.cost_usd ?? 0), 0);
+  const traceCost = traces.reduce((s, t) => s + (t.cost_usd ?? 0), 0);
+  const costRecovered = incidents.reduce((s, i) => s + (i.cost_recovered_usd ?? 0), 0);
 
   const viewIncidentFromChange = useCallback((incidentId: string) => {
     setActiveTab("incidents");
@@ -90,7 +91,7 @@ export default function Dashboard() {
     <div className="dashboard-page" data-mood={mood}>
       <OpsAmbientLayer mood={mood} />
       <div className="ops-page-content">
-      <DashboardNav connected={connected} totalCost={totalCost} github={github} />
+      <DashboardNav connected={connected} totalCost={traceCost} github={github} />
 
       <div className="dashboard-toolbar">
         <HealthHero
@@ -99,7 +100,7 @@ export default function Dashboard() {
           hasChanges={changes.length > 0}
           onViewIssues={() => setActiveTab("incidents")}
         />
-        <KpiStrip events={events} incidents={incidents} />
+        <KpiStrip events={events} incidents={incidents} costRecoveredUsd={costRecovered} />
       </div>
 
       <div className="ops-terminal-frame">

@@ -12,6 +12,7 @@ from typing import Optional
 
 from . import store, ws_manager
 from .models import ChangeLogEntry, Incident
+from .tenancy import get_workspace_id
 
 
 def _short_path(incident: Incident) -> Optional[str]:
@@ -49,5 +50,7 @@ async def record(
         diff=incident.diff,
     )
     await store.save_change(entry)
-    await ws_manager.manager.broadcast("change.logged", entry.model_dump(mode="json"))
+    await ws_manager.manager.broadcast(
+        "change.logged", entry.model_dump(mode="json"), workspace_id=get_workspace_id()
+    )
     return entry

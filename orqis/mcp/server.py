@@ -122,6 +122,27 @@ _TOOLS = [
             "required": ["incident_id"],
         },
     },
+    {
+        "name": "watch_incidents",
+        "description": (
+            "Poll for new or updated incidents (open/patched/pr_open). "
+            "Use for proactive IDE notifications between agent turns."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "since_seconds": {
+                    "type": "integer",
+                    "description": "Only incidents from the last N seconds (default 60)",
+                    "default": 60,
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Optional status filter (e.g. patched, pr_open)",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -236,7 +257,40 @@ def _handle_approve_incident(backend: str, admin_token: str, args: dict) -> str:
         return f"Patch failed: {_detail(r)}"
     r.raise_for_status()
     data = r.json()
-    return f"Patch applied to {data.get('file', 'file')}. Incident approved."
+    return (
+        f"Patch applied to {data.get('file', 'file')}. "
+        f"Incident approved. status=approved"
+    )
+
+
+def _handle_watch_incidents(backend: str, admin_token: str, args: dict) -> str:
+    import time
+
+    since = int(args.get("since_seconds", 60))
+    status_filter = args.get("status") or ""
+    r = mcp_http.get_json(backend, "/incidents", params={"limit": 50}, admin_token=admin_token)
+    r.raise_for_status()
+    incidents = r.json()
+    cutoff = time.time() - since
+    lines = []
+    for inc in incidents:
+        created = inc.get("created_at", "")
+        try:
+            from datetime import datetime
+
+            ts = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            ts = cutoff
+        if ts < cutoff:
+            continue
+        st = inc.get("status", "")
+        if status_filter and st != status_filter:
+            continue
+        lines.append(
+            f"[{st}] id={inc['id']} pr={inc.get('pr_url') or '-'} "
+            f"{inc.get('error_message', '')[:80]}"
+        )
+    return "\n".join(lines) if lines else "No recent incidents in window."
 
 
 def _handle_open_pr(backend: str, admin_token: str, args: dict) -> str:
@@ -251,10 +305,15 @@ def _handle_open_pr(backend: str, admin_token: str, args: dict) -> str:
     if r.status_code == 409:
         return f"Cannot open PR: {_detail(r)}"
     r.raise_for_status()
-    return (
-        "Opening fix PR on GitHub — watch incident status for pr_open or poll "
-        "list_incidents / get_incident."
-    )
+    detail = mcp_http.get_json(backend, f"/incidents/{iid}", admin_token=admin_token)
+    if detail.status_code == 200:
+        inc = detail.json()
+        return (
+            f"PR flow started for {iid}: status={inc.get('status')} "
+            f"pr_url={inc.get('pr_url') or 'pending'} "
+            f"pr_error={inc.get('pr_error') or 'none'}"
+        )
+    return "Opening fix PR on GitHub — poll get_incident for pr_url."
 
 
 def _handle_resolve_incident(backend: str, admin_token: str, args: dict) -> str:
@@ -291,6 +350,7 @@ _HANDLERS = {
     "open_pr": _handle_open_pr,
     "resolve_incident": _handle_resolve_incident,
     "dismiss_incident": _handle_dismiss_incident,
+    "watch_incidents": _handle_watch_incidents,
 }
 
 

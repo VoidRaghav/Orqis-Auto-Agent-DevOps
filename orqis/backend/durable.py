@@ -30,7 +30,11 @@ DEFAULT_TENANT = "default"
 
 
 def enabled() -> bool:
-    return bool(config.DATABASE_URL)
+    # The durable store is single-tenant (tenant_id="default"). In multi-tenant
+    # mode it would collapse every workspace's data under one tenant and rehydrate
+    # to the wrong keys, breaking isolation — so it's gated off there until it is
+    # made workspace-aware. Single-tenant (the common case) is unaffected.
+    return bool(config.DATABASE_URL) and not config.MULTI_TENANT
 
 
 def _status_str(incident) -> str:

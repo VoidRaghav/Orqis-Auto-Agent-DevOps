@@ -1,4 +1,4 @@
-﻿@import url('https://fonts.googleapis.com/css2?family=Anton&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Anton&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -3117,6 +3117,72 @@ body::before {
   color: var(--text-3);
 }
 
+.settings-audit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.settings-audit-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  grid-template-rows: auto auto;
+  gap: 2px 10px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.settings-audit-time {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  color: var(--text-3);
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.settings-audit-action {
+  color: var(--green);
+  font-size: 11px;
+}
+
+.settings-audit-detail {
+  color: var(--text-3);
+  word-break: break-all;
+}
+
+.settings-ide-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.settings-ide-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-ide-path {
+  color: var(--text-3);
+  text-align: right;
+  font-size: 10px;
+}
+
 .settings-divider {
   height: 1px;
   background: var(--border);
@@ -3163,6 +3229,96 @@ body::before {
   padding: 4px 0;
   cursor: pointer;
   text-align: left;
+}
+
+.settings-wizard-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.settings-wizard-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  background: rgba(10, 17, 15, 0.35);
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.settings-wizard-step.is-done {
+  border-color: rgba(61, 220, 151, 0.35);
+  color: var(--green);
+}
+
+.settings-wizard-step.is-active {
+  border-color: rgba(110, 181, 255, 0.45);
+  color: var(--github);
+  background: rgba(110, 181, 255, 0.08);
+}
+
+.settings-wizard-step-num {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  flex-shrink: 0;
+}
+
+.settings-wizard-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-wizard-lead {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  margin: 0;
+}
+
+.settings-wizard-lead code {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.settings-wizard-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.settings-wizard-connected {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.settings-wizard-ready {
+  font-family: 'DM Mono', monospace;
+  font-size: 12px;
+  color: var(--green);
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--green-dim);
+  border: 1px solid rgba(61, 220, 151, 0.25);
+  border-radius: 6px;
 }
 
 .settings-repo-chips {

@@ -70,8 +70,25 @@ _tripped: set[str] = set()
 _lock = asyncio.Lock()
 
 
+from ..backend.tenancy import get_workspace_id
+
+
 def _key(source: str, tool: str, args: str) -> str:
-    return f"{source}\x00{tool}\x00{args}"
+    wid = get_workspace_id()
+    return f"{wid}\x00{source}\x00{tool}\x00{args}"
+
+
+# Per-source recent call rate — raises threshold for bursty but legitimate sources.
+_source_rates: dict[str, float] = {}
+
+
+def _threshold_for(source: str) -> int:
+    rate = _source_rates.get(source, 0.0)
+    return max(THRESHOLD, int(rate * 0.5) + THRESHOLD)
+
+
+def _note_rate(source: str, count: int) -> None:
+    _source_rates[source] = count / max(WINDOW_SECONDS, 1.0)
 
 
 async def observe(event: TraceEvent) -> Optional[AnomalySignal]:
@@ -113,12 +130,14 @@ async def observe(event: TraceEvent) -> Optional[AnomalySignal]:
         while bucket.timestamps and bucket.timestamps[0] < cutoff:
             bucket.timestamps.popleft()
 
-        if len(bucket.timestamps) < THRESHOLD or key in _fired:
+        _note_rate(event.source, len(bucket.timestamps))
+
+        if len(bucket.timestamps) < _threshold_for(event.source) or key in _fired:
             return None
 
         # Crossed the threshold for the first time — escalate exactly once.
         _fired.add(key)
-        _tripped.add(event.source)
+        _tripped.add(f"{get_workspace_id()}\x00{event.source}")
         return AnomalySignal(
             source=event.source,
             tool_name=bucket.tool_name,
@@ -132,22 +151,26 @@ async def observe(event: TraceEvent) -> Optional[AnomalySignal]:
 
 def is_tripped(source: str) -> bool:
     """True once a runaway loop has been confirmed for this source."""
-    return source in _tripped
+    wid = get_workspace_id()
+    return f"{wid}\x00{source}" in _tripped
 
 
 def reset(source: Optional[str] = None) -> None:
     """
-    Clear detector state. With a source, clears only that source (so a fixed
-    agent can run again cleanly); with none, clears everything — used by the
-    demo reset endpoint to make runs repeatable.
+    Clear detector state for the current workspace. With a source, clears only
+    that source; with none, clears all buckets/fired/tripped keys for this workspace.
     """
+    wid = get_workspace_id()
     if source is None:
-        _buckets.clear()
-        _fired.clear()
-        _tripped.clear()
+        ws_prefix = f"{wid}\x00"
+        for key in [k for k in list(_buckets) if k.startswith(ws_prefix)]:
+            del _buckets[key]
+        _fired.difference_update({k for k in _fired if k.startswith(ws_prefix)})
+        _tripped.difference_update({k for k in _tripped if k.startswith(ws_prefix)})
         return
-    _tripped.discard(source)
-    prefix = f"{source}\x00"
+    trip_key = f"{wid}\x00{source}"
+    _tripped.discard(trip_key)
+    prefix = f"{wid}\x00{source}\x00"
     for key in [k for k in _buckets if k.startswith(prefix)]:
         del _buckets[key]
     _fired.difference_update({k for k in _fired if k.startswith(prefix)})

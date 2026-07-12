@@ -23,8 +23,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Optional
 
-from .. import config
-from ..backend import store, ws_manager
+from ..backend.tenancy import get_workspace_id, reset_workspace_id, set_workspace_id
 from ..backend.models import ErrorType, Incident, IncidentStatus, ValidationStatus
 from ..daemon.interpreter import fallback, interpret
 from ..integrations.github import auth as gh_auth
@@ -54,9 +53,31 @@ _TERMINAL_FOR_DEDUP = (
 _dedup_lock = asyncio.Lock()
 
 
-def _fingerprint(error_message: str) -> str:
-    """Stable key for deduplication — first 200 chars normalised."""
-    key = error_message.strip()[:200].lower()
+def _spawn(coro, workspace_id: Optional[str] = None):
+    """Run async work in a detached task with workspace context preserved."""
+    wid = workspace_id or get_workspace_id()
+
+    async def _wrapped():
+        token = set_workspace_id(wid)
+        try:
+            await coro
+        finally:
+            reset_workspace_id(token)
+
+    return asyncio.create_task(_wrapped())
+
+
+def _fingerprint(error_message: str, error_type: Optional[ErrorType] = None) -> str:
+    """Stable key — structural frame + error type + message prefix."""
+    parts: list[str] = []
+    if error_type is not None:
+        parts.append(error_type.value)
+    frames = file_reader.parse_frames(error_message)
+    if frames:
+        path, line = frames[-1]
+        parts.append(f"{path}:{line}")
+    parts.append(error_message.strip()[:200].lower())
+    key = "|".join(parts)
     return hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()
 
 
@@ -111,6 +132,31 @@ def _located_fields(location, resolved) -> dict:
     return fields
 
 
+async def _attach_repo_from_settings(
+    incident: Incident, source: str, location, resolved
+) -> Incident:
+    if resolved is not None or incident.repo_full_name:
+        return incident
+    import os
+
+    settings = await store.get_settings()
+    repo = source_resolver.repo_for_source(settings, source)
+    if not repo:
+        return incident
+    rel = location.repo_relative_path
+    if not rel and location.file_path and config.PROJECT_ROOT:
+        try:
+            rel = os.path.relpath(location.file_path, config.PROJECT_ROOT).replace("\\", "/")
+        except ValueError:
+            rel = None
+    if not rel:
+        return incident
+    updated = await store.update_incident(
+        incident.id, repo_full_name=repo, repo_relative_path=rel
+    )
+    return updated or incident
+
+
 async def _finalize_patch(
     incident: Incident, diff: str, location, fix_method: str
 ) -> Incident:
@@ -143,6 +189,10 @@ async def _finalize_patch(
     )
     await _broadcast("incident.patched", incident)
     await _maybe_open_pr(incident)
+    if incident.status in (IncidentStatus.PATCHED, IncidentStatus.LOW_CONFIDENCE):
+        from ..notifications import dispatcher
+
+        _spawn(dispatcher.notify("incident.patched", incident))
     return incident
 
 
@@ -158,13 +208,13 @@ async def _maybe_open_pr(incident: Optional[Incident]) -> None:
         return
 
     if incident.status == IncidentStatus.PATCHED:
-        asyncio.create_task(pr_service.open_fix_pr(incident))
+        _spawn(pr_service.open_fix_pr(incident))
         return
 
     if incident.status == IncidentStatus.LOW_CONFIDENCE:
         settings = await store.get_settings()
         if settings.get("pr_low_confidence"):
-            asyncio.create_task(pr_service.open_fix_pr(incident))
+            _spawn(pr_service.open_fix_pr(incident))
 
 
 async def trigger(
@@ -182,7 +232,7 @@ async def trigger(
     Never raises — failures degrade gracefully to interpretation-only.
     """
     root = project_root or config.PROJECT_ROOT
-    fp = _fingerprint(error_message)
+    fp = _fingerprint(error_message, error_type)
 
     # --- Atomic dedup check-and-create -------------------------------------
     # Hold the lock across the lookup AND the new-incident save so two
@@ -210,9 +260,7 @@ async def trigger(
     await _broadcast("incident.created", incident)
 
     # LLM interpretation runs async — replaces fallback when ready
-    asyncio.create_task(
-        _update_interpretation(incident.id, error_message, error_type)
-    )
+    _spawn(_update_interpretation(incident.id, error_message, error_type))
 
     # Locate failing code — GitHub repo first (server), local disk as fallback.
     location, resolved = await _locate(error_message, source, root)
@@ -245,7 +293,7 @@ async def trigger_anomaly(signal) -> Optional[Incident]:
 
     signal is an anomaly.AnomalySignal. Never raises.
     """
-    fp = _fingerprint(f"loop:{signal.source}:{signal.tool_name}:{signal.tool_args}")
+    fp = _fingerprint(message, ErrorType.RUNAWAY_LOOP)
     args = f"({signal.tool_args})" if signal.tool_args else "()"
     message = (
         f"Runaway tool loop: {signal.tool_name}{args} called "
@@ -293,9 +341,9 @@ async def trigger_anomaly(signal) -> Optional[Incident]:
         )
         return incident
 
-    incident = await store.update_incident(
-        incident.id, **_located_fields(location, resolved)
-    )
+    fields = _located_fields(location, resolved)
+    incident = await store.update_incident(incident.id, **fields)
+    incident = await _attach_repo_from_settings(incident, signal.source, location, resolved)
     await _broadcast("incident.located", incident)
 
     # Known failure class: apply the verified bounded-retry remediation first.
@@ -342,5 +390,7 @@ async def _broadcast(event_type: str, incident: Optional[Incident]) -> None:
     if incident is None:
         return
     await ws_manager.manager.broadcast(
-        event_type, incident.model_dump(mode="json")
+        event_type,
+        incident.model_dump(mode="json"),
+        workspace_id=get_workspace_id(),
     )

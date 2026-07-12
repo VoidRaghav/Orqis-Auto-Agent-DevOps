@@ -116,6 +116,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    if ENV_PATH.is_file() and PEM_PATH.is_file():
+        try:
+            st = json.loads(STATUS.read_text(encoding="utf-8"))
+            if st.get("state") == "done":
+                print("GitHub App already registered — see secrets/orqis-github-app.env", flush=True)
+                print("Delete secrets/ to re-register, or run scripts/tunnel_webhook.py for webhooks.", flush=True)
+                return 0
+        except Exception:
+            pass
+
     manifest_b64 = (
         base64.urlsafe_b64encode(json.dumps(MANIFEST).encode()).decode().rstrip("=")
     )

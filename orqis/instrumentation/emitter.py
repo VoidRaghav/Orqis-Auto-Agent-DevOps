@@ -85,9 +85,12 @@ def _worker() -> None:
 
 def _post_with_retry(client: httpx.Client, payload: dict) -> None:
     url = f"{config.BACKEND_URL}/trace"
+    headers = {}
+    if config.INGEST_API_KEY:
+        headers["Authorization"] = f"Bearer {config.INGEST_API_KEY}"
     for attempt in range(MAX_RETRIES + 1):
         try:
-            client.post(url, json=payload)
+            client.post(url, json=payload, headers=headers)
             return
         except httpx.ConnectError:
             # Backend not running — don't retry connection errors, just drop

@@ -38,6 +38,9 @@ def apply(diff: str, project_root: str) -> tuple[bool, str]:
     if not _is_safe(target_path, project_root):
         return False, f"target file {target_path} is outside project root"
 
+    if not target_path.lower().endswith(".py"):
+        return False, f"only .py files can be patched, refused: {target_path}"
+
     if not os.path.isfile(target_path):
         return False, f"target file does not exist: {target_path}"
 
