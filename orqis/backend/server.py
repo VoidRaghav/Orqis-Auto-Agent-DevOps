@@ -22,15 +22,21 @@ Railway setup:
 """
 
 import asyncio
+import hmac
 import json
+import secrets
 from contextlib import asynccontextmanager
+from urllib.parse import urlencode
 
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from .. import config
-from ..backend import store, ws_manager
+from ..backend import deps, store, ws_manager, workspace_auth
+from ..backend import audit
+from ..backend.tenancy import get_workspace_id, reset_workspace_id, set_workspace_id
 from ..backend.models import ChangeLogEntry, Incident, IncidentStatus, IngestRequest, InterpretationUpdate, LogEvent, TraceEvent
 from ..daemon import log_reader, normalizer
 
@@ -46,6 +52,29 @@ async def lifespan(app: FastAPI):
             f"[orqis] cannot reach Redis at {config.REDIS_URL}: {e}\n"
             "Start Redis with:  redis-server  or  brew services start redis"
         ) from e
+
+    migrated = await workspace_auth.migrate_legacy_keys_to_default_workspace()
+    if any(migrated.values()):
+        print(f"[orqis] migrated legacy Redis keys to default workspace: {migrated}")
+
+    if config.MULTI_TENANT and not config.GITHUB_OAUTH_CLIENT_ID:
+        print("[orqis] warning: ORQIS_MULTI_TENANT=1 but GITHUB_OAUTH_CLIENT_ID is unset")
+
+    if config.MULTI_TENANT and config.HOSTED:
+        if config.DEV_MODE:
+            raise RuntimeError(
+                "[orqis] ORQIS_DEV_MODE must be 0 when ORQIS_MULTI_TENANT=1 and ORQIS_HOSTED=1"
+            )
+        if config.SESSION_SECRET in ("", "orqis-dev-session-change-me"):
+            raise RuntimeError(
+                "[orqis] set ORQIS_SESSION_SECRET to a random value for hosted multi-tenant"
+            )
+        if not config.GITHUB_OAUTH_CLIENT_ID or not config.GITHUB_OAUTH_CLIENT_SECRET:
+            raise RuntimeError(
+                "[orqis] GITHUB_OAUTH_CLIENT_ID/SECRET required for hosted multi-tenant"
+            )
+
+    config.validate_multi_tenant_startup()
 
     if (
         not config.DEV_MODE
@@ -88,24 +117,29 @@ def _check_drain_auth(request: Request) -> None:
     if request.query_params.get("token") == config.DRAIN_TOKEN:
         return
     auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer ") and auth[7:] == config.DRAIN_TOKEN:
+    if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:], config.DRAIN_TOKEN):
         return
     raise HTTPException(status_code=401, detail="invalid or missing drain token")
 
 
+def _check_body_size(raw: bytes) -> None:
+    if config.MAX_INGEST_BODY_BYTES and len(raw) > config.MAX_INGEST_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="request body too large")
+
+
 def _check_admin_auth(request: Request) -> None:
     """
-    Guard settings mutations with ORQIS_ADMIN_TOKEN (S2). Accepts the token via
-    Authorization: Bearer <token> or X-Orqis-Admin-Token. Open in local dev when
-    the token is unset.
+    Guard write paths with ORQIS_ADMIN_TOKEN (S2). Accepts the token via
+    Authorization: Bearer <token> or X-Orqis-Admin-Token. Fail-closed when
+    the token is unset — no dev-mode bypass.
     """
     if not config.ADMIN_TOKEN:
-        return
+        raise HTTPException(status_code=401, detail="admin token not configured")
     header = request.headers.get("X-Orqis-Admin-Token", "")
-    if header == config.ADMIN_TOKEN:
+    if header and hmac.compare_digest(header, config.ADMIN_TOKEN):
         return
     auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer ") and auth[7:] == config.ADMIN_TOKEN:
+    if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:], config.ADMIN_TOKEN):
         return
     raise HTTPException(status_code=401, detail="invalid or missing admin token")
 
@@ -113,7 +147,7 @@ def _check_admin_auth(request: Request) -> None:
 def _has_admin_auth(request: Request) -> bool:
     """Return True when the request carries a valid admin token."""
     if not config.ADMIN_TOKEN:
-        return config.DEV_MODE
+        return False
     try:
         _check_admin_auth(request)
         return True
@@ -128,10 +162,11 @@ app = FastAPI(title="Orqis", lifespan=lifespan)
 # configurable; defaults cover local dev. Set ORQIS_CORS_ORIGINS (comma list)
 # or "*" to widen.
 _cors_origins = [o.strip() for o in config.CORS_ORIGINS.split(",") if o.strip()]
+_allow_credentials = config.MULTI_TENANT and "*" not in _cors_origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins or ["*"],
-    allow_credentials=False,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -141,7 +176,274 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "ws_clients": ws_manager.manager.active_count}
+    return {
+        "status": "ok",
+        "ws_clients": ws_manager.manager.active_count,
+        "multi_tenant": config.MULTI_TENANT,
+    }
+
+
+# --- Auth (GitHub OAuth + workspace sessions) ---------------------------------
+
+@app.get("/auth/github/login")
+async def auth_github_login(invite: str = Query(default="")):
+    if not config.GITHUB_OAUTH_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
+    state = secrets.token_urlsafe(24)
+    r = await store.get_redis()
+    payload = json.dumps({"invite": invite}) if invite else "1"
+    await r.set(f"orqis:oauth:state:{state}", payload, ex=600)
+    params = urlencode(
+        {
+            "client_id": config.GITHUB_OAUTH_CLIENT_ID,
+            "redirect_uri": f"{config.PUBLIC_URL.rstrip('/')}/auth/github/callback",
+            "scope": "read:user",
+            "state": state,
+        }
+    )
+    return RedirectResponse(url=f"https://github.com/login/oauth/authorize?{params}")
+
+
+@app.get("/auth/github/callback")
+async def auth_github_callback(
+    request: Request,
+    response: Response,
+    code: str = "",
+    state: str = "",
+):
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="missing code or state")
+    r = await store.get_redis()
+    state_payload = await r.get(f"orqis:oauth:state:{state}")
+    if not state_payload:
+        raise HTTPException(status_code=403, detail="invalid oauth state")
+    await r.delete(f"orqis:oauth:state:{state}")
+
+    invite_token = ""
+    if state_payload != "1":
+        try:
+            invite_token = json.loads(state_payload).get("invite") or ""
+        except json.JSONDecodeError:
+            pass
+
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        token_resp = await http.post(
+            "https://github.com/login/oauth/access_token",
+            headers={"Accept": "application/json"},
+            json={
+                "client_id": config.GITHUB_OAUTH_CLIENT_ID,
+                "client_secret": config.GITHUB_OAUTH_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": f"{config.PUBLIC_URL.rstrip('/')}/auth/github/callback",
+            },
+        )
+        token_data = token_resp.json()
+        access = token_data.get("access_token")
+        if not access:
+            raise HTTPException(status_code=403, detail="oauth token exchange failed")
+
+        user_resp = await http.get(
+            "https://api.github.com/user",
+            headers={
+                "Authorization": f"Bearer {access}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        user = user_resp.json()
+
+    github_id = user.get("id")
+    login = user.get("login", "user")
+    if not github_id:
+        raise HTTPException(status_code=403, detail="invalid github user")
+
+    if invite_token:
+        try:
+            workspace_id, _ws = await workspace_auth.accept_invite(
+                invite_token,
+                int(github_id),
+                login,
+                user.get("avatar_url", ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        workspace_id, _ws = await workspace_auth.get_or_create_user_workspace(
+            github_id, login, user.get("avatar_url", "")
+        )
+    session_id = workspace_auth.create_session_id()
+    await workspace_auth.save_session(
+        session_id, workspace_id=workspace_id, github_id=github_id, login=login
+    )
+
+    # Ensure workspace has an ingest key
+    keys = await workspace_auth.list_api_keys(workspace_id)
+    if not keys:
+        await workspace_auth.create_api_key(workspace_id, label="default")
+
+    resp = RedirectResponse(url=f"{_dashboard_origin()}/dashboard")
+    deps.set_session_cookie(resp, session_id)
+    return resp
+
+
+@app.get("/auth/me")
+async def auth_me(request: Request):
+    """Return auth state without requiring login (for AuthGuard)."""
+    if not config.MULTI_TENANT:
+        return {"authenticated": True, "multi_tenant": False, "workspace_id": "default"}
+    session_id = deps._session_cookie(request)
+    if not session_id:
+        return {"authenticated": False, "multi_tenant": True}
+    session = await workspace_auth.get_session(session_id)
+    if not session:
+        return {"authenticated": False, "multi_tenant": True}
+    ws = await workspace_auth.get_workspace(session["workspace_id"])
+    return {
+        "authenticated": True,
+        "login": session.get("login"),
+        "workspace_id": session.get("workspace_id"),
+        "workspace_name": ws.get("name") if ws else None,
+        "multi_tenant": True,
+    }
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request, response: Response):
+    session_id = deps._session_cookie(request)
+    if session_id:
+        await workspace_auth.delete_session(session_id)
+    deps.clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/auth/ws-ticket")
+async def auth_ws_ticket(request: Request):
+    wid = await deps.resolve_dashboard_workspace(request)
+    return {"ticket": await deps.create_ws_ticket_async(wid)}
+
+
+@app.get("/workspace/audit")
+async def list_workspace_audit(request: Request, limit: int = 50):
+    wid = await deps.resolve_dashboard_workspace(request)
+    return await audit.list_recent(wid, limit=min(limit, 200))
+
+
+@app.get("/workspace/api-keys")
+async def list_workspace_api_keys(request: Request):
+    wid = await deps.resolve_dashboard_workspace(request)
+    return await workspace_auth.list_api_keys(wid)
+
+
+@app.post("/workspace/api-keys")
+async def create_workspace_api_key(request: Request, label: str = "default"):
+    wid = await deps.resolve_dashboard_workspace(request)
+    created = await workspace_auth.create_api_key(wid, label=label)
+    await audit.record(
+        "api_key.create",
+        actor=deps.actor_from_request(request),
+        resource_type="api_key",
+        resource_id=created["meta"]["id"],
+        ip=request.client.host if request.client else None,
+    )
+    return created
+
+
+async def _require_workspace_owner(request: Request) -> tuple[str, dict]:
+    wid = await deps.resolve_dashboard_workspace(request)
+    session_id = deps._session_cookie(request)
+    session = await workspace_auth.get_session(session_id or "")
+    if not session:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    role = await workspace_auth.get_member_role(wid, int(session["github_id"]))
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="workspace owner required")
+    return wid, session
+
+
+@app.get("/invites/{token}/preview")
+async def invite_preview(token: str):
+    """Public metadata for an invite link (no auth)."""
+    inv = await workspace_auth.get_invite(token)
+    if not inv:
+        raise HTTPException(status_code=404, detail="invite not found or expired")
+    ws = await workspace_auth.get_workspace(inv["workspace_id"])
+    if not ws:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    return {
+        "workspace_name": ws.get("name"),
+        "workspace_id": inv["workspace_id"],
+        "role": inv.get("role", "member"),
+        "created_by_login": inv.get("created_by_login"),
+    }
+
+
+@app.get("/workspace/members")
+async def list_workspace_members(request: Request):
+    wid = await deps.resolve_dashboard_workspace(request)
+    return await workspace_auth.list_members(wid)
+
+
+@app.get("/workspace/invites")
+async def list_workspace_invites(request: Request):
+    wid, _ = await _require_workspace_owner(request)
+    return await workspace_auth.list_invites(wid)
+
+
+@app.post("/workspace/invites")
+async def create_workspace_invite(request: Request):
+    wid, session = await _require_workspace_owner(request)
+    inv = await workspace_auth.create_invite(
+        wid,
+        created_by_github_id=int(session["github_id"]),
+        created_by_login=session.get("login", "owner"),
+    )
+    origin = _dashboard_origin()
+    await audit.record(
+        "invite.create",
+        actor=deps.actor_from_request(request),
+        resource_type="invite",
+        resource_id=inv["token"],
+        ip=request.client.host if request.client else None,
+    )
+    return {
+        **inv,
+        "url": f"{origin}/invite/{inv['token']}",
+    }
+
+
+@app.delete("/workspace/invites/{token}")
+async def revoke_workspace_invite(request: Request, token: str):
+    wid, _ = await _require_workspace_owner(request)
+    ok = await workspace_auth.revoke_invite(wid, token)
+    if not ok:
+        raise HTTPException(status_code=404, detail="invite not found")
+    await audit.record(
+        "invite.revoke",
+        actor=deps.actor_from_request(request),
+        resource_type="invite",
+        resource_id=token,
+        ip=request.client.host if request.client else None,
+    )
+    return {"ok": True}
+
+
+def _dashboard_origin() -> str:
+    return config.CORS_ORIGINS.split(",")[0].strip() or "http://localhost:3000"
+
+
+@app.delete("/workspace/api-keys/{key_id}")
+async def revoke_workspace_api_key(request: Request, key_id: str):
+    wid = await deps.resolve_dashboard_workspace(request)
+    ok = await workspace_auth.revoke_api_key(wid, key_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="api key not found")
+    await audit.record(
+        "api_key.revoke",
+        actor=deps.actor_from_request(request),
+        resource_type="api_key",
+        resource_id=key_id,
+        ip=request.client.host if request.client else None,
+    )
+    return {"ok": True}
 
 
 @app.post("/drain", status_code=202)
@@ -149,19 +451,13 @@ async def drain(
     request: Request,
     source: str = Query(default="unknown"),
 ):
-    """
-    Universal log drain endpoint — accepts any format, any content-type.
-
-    Supports: NDJSON, JSON array, single JSON object, plain text, logfmt,
-    syslog, Docker JSON, Railway drain, Vercel log drain, Fly.io, custom.
-
-    Usage:
-      Railway: Settings -> Log Drains -> HTTP -> https://your-backend/drain?source=my-app
-      Docker:  --log-driver=gelf  or  pipe stdout -> curl
-      Manual:  curl -X POST .../drain?source=api --data-binary @/var/log/app.log
-    """
-    _check_drain_auth(request)
+    if config.MULTI_TENANT:
+        await deps.resolve_ingest_workspace(request)
+    else:
+        _check_drain_auth(request)
+        await deps.bind_workspace("default")
     raw = await request.body()
+    _check_body_size(raw)
     lines = normalizer.normalize(raw)
     if not lines:
         return {"accepted": 0}
@@ -169,56 +465,65 @@ async def drain(
     events = await log_reader.ingest_lines(lines, source=source)
     for event in events:
         await store.save_event(event)
-        await ws_manager.manager.broadcast("log.event", event.model_dump(mode="json"))
+        await ws_manager.manager.broadcast(
+            "log.event", event.model_dump(mode="json"), workspace_id=get_workspace_id()
+        )
     return {"accepted": len(events)}
 
 
 @app.post("/ingest", status_code=202)
-async def ingest(body: IngestRequest):
-    """
-    Structured batch ingest — JSON body with a lines array and source label.
-    Each line is run through the normalizer so mixed formats in the array work.
-    """
-    # Normalize each line individually so any embedded JSON objects are flattened
+async def ingest(request: Request, body: IngestRequest):
+    if config.MULTI_TENANT:
+        await deps.resolve_ingest_workspace(request)
+    else:
+        await deps.bind_workspace("default")
     flat: list[str] = []
     for raw_line in body.lines:
         flat.extend(normalizer.normalize(raw_line.encode()))
     events = await log_reader.ingest_lines(flat or body.lines, source=body.source)
     for event in events:
         await store.save_event(event)
-        await ws_manager.manager.broadcast("log.event", event.model_dump(mode="json"))
+        await ws_manager.manager.broadcast(
+            "log.event", event.model_dump(mode="json"), workspace_id=get_workspace_id()
+        )
     return {"accepted": len(events)}
 
 
 @app.post("/events", status_code=201)
-async def receive_event(event: LogEvent):
-    """
-    Accept a single classified LogEvent from the local daemon.
-    Triggers the RCA pipeline for error events that contain a traceback.
-    """
+async def receive_event(request: Request, event: LogEvent):
+    if config.MULTI_TENANT:
+        await deps.resolve_ingest_workspace(request)
+    else:
+        await deps.bind_workspace("default")
     import asyncio
-    await store.save_event(event)
-    await ws_manager.manager.broadcast("log.event", event.model_dump(mode="json"))
+    from ..rca.pipeline import _spawn, trigger
 
-    # Trigger RCA only when the line contains a traceback file reference
+    await store.save_event(event)
+    await ws_manager.manager.broadcast(
+        "log.event", event.model_dump(mode="json"), workspace_id=get_workspace_id()
+    )
+
     if event.is_error and 'File "' in event.raw_line:
-        from ..rca.pipeline import trigger
-        asyncio.create_task(trigger(
-            source_event_id=event.id,
-            error_message=event.raw_line,
-            error_type=event.error_type,
-            source=event.source,
-        ))
+        wid = get_workspace_id()
+        _spawn(
+            trigger(
+                source_event_id=event.id,
+                error_message=event.raw_line,
+                error_type=event.error_type,
+                source=event.source,
+            ),
+            workspace_id=wid,
+        )
 
     return {"id": event.id}
 
 
 @app.patch("/events/{event_id}/interpretation")
-async def update_interpretation(event_id: str, body: InterpretationUpdate):
-    """
-    Called by the daemon after the async LLM interpretation resolves.
-    Updates the stored event and pushes a targeted update to the dashboard.
-    """
+async def update_interpretation(request: Request, event_id: str, body: InterpretationUpdate):
+    if config.MULTI_TENANT:
+        await deps.resolve_ingest_workspace(request)
+    else:
+        await deps.bind_workspace("default")
     updated = await store.update_interpretation(event_id, body.interpretation)
     if updated is None:
         raise HTTPException(status_code=404, detail="event not found")
@@ -226,63 +531,62 @@ async def update_interpretation(event_id: str, body: InterpretationUpdate):
     await ws_manager.manager.broadcast(
         "log.interpretation",
         {"event_id": event_id, "interpretation": body.interpretation},
+        workspace_id=get_workspace_id(),
     )
     return {"ok": True}
 
 
 @app.get("/events", response_model=list[LogEvent])
-async def get_events(limit: int = 100):
-    """Return the N most recent events for dashboard initial load."""
+async def get_events(request: Request, limit: int = 100):
+    await deps.resolve_dashboard_workspace(request)
     return await store.get_recent_events(limit=min(limit, 500))
 
 
 @app.post("/trace", status_code=201)
-async def receive_trace(event: TraceEvent):
-    """
-    Accept a single TraceEvent from the SDK instrumentation layer.
-    Stores it, broadcasts to dashboard, and fires async LLM interpretation
-    for error events.
-    """
+async def receive_trace(request: Request, event: TraceEvent):
+    if config.MULTI_TENANT:
+        await deps.resolve_ingest_workspace(request)
+    else:
+        await deps.bind_workspace("default")
     import asyncio
-
     from ..rca import anomaly
+    from ..rca.pipeline import _spawn, trigger, trigger_anomaly
 
     await store.save_trace_event(event)
-    await ws_manager.manager.broadcast("trace.event", event.model_dump(mode="json"))
+    await ws_manager.manager.broadcast(
+        "trace.event", event.model_dump(mode="json"), workspace_id=get_workspace_id()
+    )
 
-    # Behavioural detection: watch the live stream for a runaway tool loop.
-    # This fires no exception — it is only visible here, in the stream itself.
     signal = await anomaly.observe(event)
     if signal is not None:
-        from ..rca.pipeline import trigger_anomaly
-        asyncio.create_task(trigger_anomaly(signal))
+        _spawn(trigger_anomaly(signal), workspace_id=get_workspace_id())
 
     if event.is_error and event.error_message:
         from ..daemon.interpreter import fallback
 
-        # Set fallback immediately so dashboard always has something readable
         fb = fallback(event.error_type)
         await store.update_trace_interpretation(event.id, fb)
         await ws_manager.manager.broadcast(
             "trace.interpretation",
             {"event_id": event.id, "interpretation": fb},
+            workspace_id=get_workspace_id(),
+        )
+        _spawn(
+            _interpret_trace(event.id, event.error_message, event.error_type),
+            workspace_id=get_workspace_id(),
         )
 
-        # Fire async LLM interpretation
-        asyncio.create_task(_interpret_trace(event.id, event.error_message, event.error_type))
-
-        # Trigger RCA pipeline if the error message contains a traceback
         if 'File "' in event.error_message:
-            from ..rca.pipeline import trigger
-            asyncio.create_task(trigger(
-                source_event_id=event.id,
-                error_message=event.error_message,
-                error_type=event.error_type,
-                source=event.source,
-            ))
+            _spawn(
+                trigger(
+                    source_event_id=event.id,
+                    error_message=event.error_message,
+                    error_type=event.error_type,
+                    source=event.source,
+                ),
+                workspace_id=get_workspace_id(),
+            )
 
-    # circuit_break tells the calling agent to stop: Orqis has confirmed a
-    # runaway loop on this source. This is the closed-loop kill switch.
     return {"id": event.id, "circuit_break": anomaly.is_tripped(event.source)}
 
 
@@ -293,25 +597,25 @@ async def _interpret_trace(event_id: str, error_message: str, error_type) -> Non
     await ws_manager.manager.broadcast(
         "trace.interpretation",
         {"event_id": event_id, "interpretation": text},
+        workspace_id=get_workspace_id(),
     )
 
 
 @app.get("/traces", response_model=list[TraceEvent])
-async def get_traces(limit: int = 100):
-    """Return the N most recent trace events for dashboard initial load."""
+async def get_traces(request: Request, limit: int = 100):
+    await deps.resolve_dashboard_workspace(request)
     return await store.get_recent_traces(limit=min(limit, 500))
 
 
 # --- RCA pipeline trigger ----------------------------------------------------
 
 @app.post("/rca/trigger", status_code=202)
-async def rca_trigger(body: dict):
-    """
-    Accept a full multi-line traceback from the daemon and run the RCA pipeline.
-    Called automatically when the daemon detects a complete Python traceback.
-    """
-    import asyncio
-    from ..rca.pipeline import trigger
+async def rca_trigger(request: Request, body: dict):
+    if config.MULTI_TENANT:
+        await deps.resolve_ingest_workspace(request)
+    else:
+        await deps.bind_workspace("default")
+    from ..rca.pipeline import _spawn, trigger
 
     traceback_text: str = body.get("traceback", "")
     source: str = body.get("source", "unknown")
@@ -319,17 +623,19 @@ async def rca_trigger(body: dict):
     if not traceback_text:
         return {"ok": False, "reason": "empty traceback"}
 
-    # Classify the error type from the traceback terminal line
     from ..daemon.pattern_matcher import classify
     last_line = [l for l in traceback_text.splitlines() if l.strip()][-1]
     _, _, error_type, _, _ = classify(last_line)
 
-    asyncio.create_task(trigger(
-        source_event_id="traceback",
-        error_message=traceback_text,
-        error_type=error_type,
-        source=source,
-    ))
+    _spawn(
+        trigger(
+            source_event_id="traceback",
+            error_message=traceback_text,
+            error_type=error_type,
+            source=source,
+        ),
+        workspace_id=get_workspace_id(),
+    )
     return {"ok": True}
 
 
@@ -339,15 +645,21 @@ async def sentry_webhook(request: Request):
     Receive a Sentry error webhook, reconstruct the traceback from its
     structured stack frames, and run the same RCA pipeline used for raw logs.
 
+    Multi-tenant: include the workspace ingest API key as
+    ``Authorization: Bearer orqs_…`` (same key used for /ingest).
+
     Configure in Sentry: Settings -> Developer Settings -> New Internal
     Integration -> Webhook URL = https://your-backend/integrations/sentry/webhook
     Set ORQIS_SENTRY_SECRET to the integration's Client Secret to enforce
     signature verification.
     """
-    import asyncio
-
     from ..integrations import sentry
-    from ..rca.pipeline import trigger
+    from ..rca.pipeline import _spawn, trigger
+
+    if config.MULTI_TENANT:
+        await deps.resolve_ingest_workspace(request)
+    else:
+        await deps.bind_workspace("default")
 
     raw = await request.body()
     signature = request.headers.get("sentry-hook-signature")
@@ -369,12 +681,16 @@ async def sentry_webhook(request: Request):
     last_line = [l for l in traceback_text.splitlines() if l.strip()][-1]
     _, _, error_type, _, _ = classify(last_line)
 
-    asyncio.create_task(trigger(
-        source_event_id="sentry",
-        error_message=traceback_text,
-        error_type=error_type,
-        source=source,
-    ))
+    wid = get_workspace_id()
+    _spawn(
+        trigger(
+            source_event_id="sentry",
+            error_message=traceback_text,
+            error_type=error_type,
+            source=source,
+        ),
+        workspace_id=wid,
+    )
     return {"ok": True}
 
 
@@ -391,7 +707,10 @@ async def ide_setup():
     mcp_block = {
         "command": "orqis",
         "args": base_args,
-        "env": {"ORQIS_ADMIN_TOKEN": "<optional-if-set-on-backend>"},
+        "env": {
+            "ORQIS_API_KEY": "<workspace-api-key-from-settings>",
+            "ORQIS_ADMIN_TOKEN": "<optional-local-dev-only>",
+        },
     }
     return {
         "backend_url": backend,
@@ -422,18 +741,14 @@ async def ide_setup():
 
 
 @app.get("/integrations/github/connect")
-async def github_connect():
-    """
-    Return the GitHub App install URL + current connection state for the
-    Settings page. The user clicks install_url, picks repos on GitHub, and the
-    `installation` webhook (and the callback below) records the installation.
-    """
+async def github_connect(request: Request):
     from ..integrations.github import install_state
 
+    wid = await deps.resolve_dashboard_workspace(request)
     settings = await store.get_settings()
     install_url = ""
     if config.GITHUB_APP_SLUG:
-        state = install_state.create_state()
+        state = install_state.create_state(wid)
         install_url = (
             f"https://github.com/apps/{config.GITHUB_APP_SLUG}/installations/new"
             f"?state={state}"
@@ -464,20 +779,45 @@ async def github_callback(
     if not install_state.verify_state(state):
         raise HTTPException(status_code=403, detail="invalid or expired install state")
 
-    if installation_id:
-        if gh_auth.is_configured():
-            token = await gh_auth.installation_token(installation_id)
-            if token is None:
-                raise HTTPException(
-                    status_code=403,
-                    detail="installation not accessible to this GitHub App",
-                )
-        repos = await gh_auth.list_installation_repos(installation_id)
-        await store.save_settings({"installation_id": installation_id, "repos": repos})
-        connect = await github_connect()
-        await ws_manager.manager.broadcast("settings.updated", connect)
+    workspace_id = install_state.parse_state(state)
+    if not workspace_id:
+        raise HTTPException(status_code=403, detail="invalid install state payload")
 
-    dashboard = config.CORS_ORIGINS.split(",")[0].strip() or "http://localhost:3000"
+    token = set_workspace_id(workspace_id)
+    try:
+        if installation_id:
+            if gh_auth.is_configured():
+                token_gh = await gh_auth.installation_token(installation_id)
+                if token_gh is None:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="installation not accessible to this GitHub App",
+                    )
+            repos = await gh_auth.list_installation_repos(installation_id)
+            account_login = await gh_auth.installation_account_login(installation_id)
+            await store.save_settings(
+                {
+                    "installation_id": installation_id,
+                    "repos": repos,
+                    "account_login": account_login,
+                }
+            )
+            await workspace_auth.set_install_workspace(installation_id, workspace_id)
+            settings = await store.get_settings()
+            connect = {
+                "configured": bool(config.GITHUB_APP_ID and config.GITHUB_APP_SLUG),
+                "install_url": "",
+                "connected": bool(settings.get("installation_id")),
+                "account_login": settings.get("account_login"),
+                "repos": settings.get("repos", []),
+            }
+            await ws_manager.manager.broadcast(
+                "settings.updated", connect, workspace_id=workspace_id
+            )
+    finally:
+        reset_workspace_id(token)
+
+    dashboard = _dashboard_origin()
     return RedirectResponse(url=f"{dashboard}/settings?github=connected")
 
 
@@ -514,23 +854,15 @@ _SECRET_SETTING_KEYS = {"cursor_api_key"}  # never echoed back
 
 
 @app.get("/settings")
-async def get_settings():
-    """
-    Return workspace settings for the dashboard. Secret-bearing fields are never
-    included in the response.
-    """
+async def get_settings_route(request: Request):
+    await deps.resolve_dashboard_workspace(request)
     settings = await store.get_settings()
     return {k: v for k, v in settings.items() if k not in _SECRET_SETTING_KEYS}
 
 
 @app.put("/settings")
 async def update_settings(request: Request):
-    """
-    Update workspace settings (source->repo map, toggles, hot-reload URL).
-    Guarded by ORQIS_ADMIN_TOKEN (S2). Validates the hot-reload URL is HTTPS and
-    not an internal address before storing.
-    """
-    _check_admin_auth(request)
+    await deps.resolve_write_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -569,29 +901,29 @@ async def update_settings(request: Request):
             )
 
     updated = await store.save_settings(body)
+    await audit.record(
+        "settings.update",
+        actor=deps.actor_from_request(request),
+        resource_type="settings",
+        resource_id=get_workspace_id(),
+        ip=request.client.host if request.client else None,
+    )
     return {k: v for k, v in updated.items() if k not in _SECRET_SETTING_KEYS}
 
 
 @app.post("/demo/reset")
-async def demo_reset(clear: bool = False):
-    """
-    Reset the runaway-loop demo so it can be run again.
-
-    Clears the anomaly detector's in-memory state so the circuit breaker
-    re-trips on the next run. The incident dedup table is intentionally NOT
-    cleared: that lets repeated runs of the same loop collapse into one
-    incident (bumping its hit count) instead of spawning a duplicate each time.
-
-    Pass ?clear=true to also delete all stored incidents and tell the dashboard
-    to empty its list — used once to wipe accumulated demo runs.
-    """
+async def demo_reset(request: Request, clear: bool = False):
+    if config.MULTI_TENANT:
+        await deps.resolve_write_auth(request)
+    else:
+        await deps.bind_workspace("default")
     from ..rca import anomaly
 
     anomaly.reset()
 
     if clear:
         counts = await store.clear_all()
-        await ws_manager.manager.broadcast("store.cleared", {})
+        await ws_manager.manager.broadcast("store.cleared", {}, workspace_id=get_workspace_id())
         return {"ok": True, "cleared": counts}
 
     return {"ok": True}
@@ -600,22 +932,23 @@ async def demo_reset(clear: bool = False):
 # --- Incidents ----------------------------------------------------------------
 
 @app.get("/incidents", response_model=list[Incident])
-async def get_incidents(limit: int = 50):
-    """Return recent incidents ordered oldest-first (for the dashboard timeline)."""
+async def get_incidents(request: Request, limit: int = 50):
+    await deps.resolve_dashboard_workspace(request)
     return await store.get_recent_incidents(limit=min(limit, 200))
 
 
 @app.get("/changes", response_model=list[ChangeLogEntry])
 async def get_changes(request: Request, limit: int = 100):
-    """Return the change log. Full diffs require admin auth (H6)."""
+    await deps.resolve_dashboard_workspace(request)
     entries = await store.get_recent_changes(limit=min(limit, 200))
-    if _has_admin_auth(request):
+    if config.MULTI_TENANT or _has_admin_auth(request):
         return entries
     return [e.model_copy(update={"diff": None}) for e in entries]
 
 
 @app.get("/incidents/{incident_id}", response_model=Incident)
-async def get_incident(incident_id: str):
+async def get_incident(request: Request, incident_id: str):
+    await deps.resolve_dashboard_workspace(request)
     incident = await store.get_incident(incident_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="incident not found")
@@ -624,17 +957,17 @@ async def get_incident(incident_id: str):
 
 @app.post("/incidents/{incident_id}/approve")
 async def approve_incident(request: Request, incident_id: str, force: bool = False):
-    """
-    Apply the generated patch to disk and mark the incident as approved.
-    This is the only endpoint that writes to the filesystem.
-
-    Normally requires PATCHED status. LOW_CONFIDENCE incidents are blocked
-    unless ?force=true is set — a human is signing off on a risky patch.
-
-    For GitHub-connected incidents this local-disk path is disabled: the fix is
-    delivered as a reviewable PR instead (merge it on GitHub).
-    """
-    _check_admin_auth(request)
+    await deps.resolve_write_auth(request)
+    if config.HOSTED:
+        raise HTTPException(
+            status_code=409,
+            detail="local disk apply is disabled in hosted mode — merge the GitHub PR",
+        )
+    if force and config.CI_MODE and not config.ALLOW_FORCE:
+        raise HTTPException(
+            status_code=403,
+            detail="force=true is blocked in CI — set ORQIS_ALLOW_FORCE=1 to override",
+        )
     from ..rca.applier import apply
 
     incident = await store.get_incident(incident_id)
@@ -672,8 +1005,15 @@ async def approve_incident(request: Request, incident_id: str, force: bool = Fal
     updated = await store.update_incident(
         incident_id, status=IncidentStatus.APPROVED.value
     )
+    await audit.record(
+        "incident.approve",
+        actor=deps.actor_from_request(request),
+        resource_type="incident",
+        resource_id=incident_id,
+        ip=request.client.host if request.client else None,
+    )
     await ws_manager.manager.broadcast(
-        "incident.approved", updated.model_dump(mode="json")
+        "incident.approved", updated.model_dump(mode="json"), workspace_id=get_workspace_id()
     )
     from . import changelog
 
@@ -690,11 +1030,7 @@ async def approve_incident(request: Request, incident_id: str, force: bool = Fal
 
 @app.post("/incidents/{incident_id}/dismiss")
 async def dismiss_incident(request: Request, incident_id: str):
-    """
-    Mark the incident as dismissed — no patch applied. If a fix PR was opened,
-    close it and clean up its branch (G4/O2).
-    """
-    _check_admin_auth(request)
+    await deps.resolve_write_auth(request)
     incident = await store.get_incident(incident_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="incident not found")
@@ -710,8 +1046,15 @@ async def dismiss_incident(request: Request, incident_id: str):
     )
     # Re-arm the rolling TTL now that the incident is terminal (P1).
     await store.set_incident_ttl(incident_id)
+    await audit.record(
+        "incident.dismiss",
+        actor=deps.actor_from_request(request),
+        resource_type="incident",
+        resource_id=incident_id,
+        ip=request.client.host if request.client else None,
+    )
     await ws_manager.manager.broadcast(
-        "incident.dismissed", updated.model_dump(mode="json")
+        "incident.dismissed", updated.model_dump(mode="json"), workspace_id=get_workspace_id()
     )
     from . import changelog
 
@@ -721,12 +1064,7 @@ async def dismiss_incident(request: Request, incident_id: str):
 
 @app.post("/incidents/{incident_id}/open-pr")
 async def open_pr(request: Request, incident_id: str):
-    """
-    Manually open (or retry) a fix PR for an incident — used for the dashboard
-    "Open PR" action on low-confidence incidents and the retry button on
-    pr_failed / patch_stale.
-    """
-    _check_admin_auth(request)
+    await deps.resolve_write_auth(request)
     from ..integrations.github import auth as gh_auth
     from ..integrations.github import pr_service
 
@@ -743,17 +1081,23 @@ async def open_pr(request: Request, incident_id: str):
     if not incident.diff:
         raise HTTPException(status_code=409, detail="no diff available to open a PR")
 
-    asyncio.create_task(pr_service.open_fix_pr(incident))
+    from ..rca.pipeline import _spawn
+
+    wid = get_workspace_id()
+    _spawn(pr_service.open_fix_pr(incident), workspace_id=wid)
+    await audit.record(
+        "incident.open_pr",
+        actor=deps.actor_from_request(request),
+        resource_type="incident",
+        resource_id=incident_id,
+        ip=request.client.host if request.client else None,
+    )
     return {"ok": True, "status": "opening"}
 
 
 @app.post("/incidents/{incident_id}/resolve")
 async def resolve_incident(request: Request, incident_id: str):
-    """
-    Manual "Mark resolved" override for when a PR was merged but the webhook was
-    missed (U1).
-    """
-    _check_admin_auth(request)
+    await deps.resolve_write_auth(request)
     from ..integrations.github import pr_service
 
     incident = await store.get_incident(incident_id)
@@ -768,19 +1112,24 @@ async def resolve_incident(request: Request, incident_id: str):
         )
         await store.set_incident_ttl(incident_id)
         await ws_manager.manager.broadcast(
-            "incident.resolved", updated.model_dump(mode="json")
+            "incident.resolved", updated.model_dump(mode="json"), workspace_id=get_workspace_id()
         )
         from . import changelog
 
         await changelog.record("resolved", updated, "Marked resolved")
+    await audit.record(
+        "incident.resolve",
+        actor=deps.actor_from_request(request),
+        resource_type="incident",
+        resource_id=incident_id,
+        ip=request.client.host if request.client else None,
+    )
     return {"ok": True}
 
 
 @app.get("/incidents/{incident_id}/prompt")
-async def get_incident_prompt(incident_id: str):
-    """
-    Return a ready-to-paste prompt for any AI coding assistant in any IDE.
-    """
+async def get_incident_prompt(request: Request, incident_id: str):
+    await deps.resolve_dashboard_workspace(request)
     from ..rca.ide_prompt import build_fix_prompt
 
     incident = await store.get_incident(incident_id)
@@ -793,17 +1142,38 @@ async def get_incident_prompt(incident_id: str):
 # --- WebSocket ----------------------------------------------------------------
 
 @app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws_manager.manager.connect(ws)
+async def websocket_endpoint(ws: WebSocket, ticket: str = Query(default="")):
+    from starlette.websockets import WebSocketDisconnect as WSD
+
+    fake_request = Request({"type": "http", "headers": []})
+    # Cookie header for session auth on WS handshake
+    cookie_header = ws.headers.get("cookie", "")
+    if cookie_header:
+        fake_request = Request(
+            {
+                "type": "http",
+                "headers": [(b"cookie", cookie_header.encode())],
+            }
+        )
+    tok = None
     try:
-        # Send recent event history on connect so the dashboard can hydrate
+        wid = await deps.resolve_ws_workspace(fake_request, ticket=ticket)
+    except HTTPException:
+        await ws.close(code=4401)
+        return
+
+    await ws_manager.manager.connect(ws, workspace_id=wid)
+    tok = set_workspace_id(wid)
+    try:
         events = await store.get_recent_events(limit=200)
         for event in events:
             await ws.send_json(
                 {"type": "log.event", "data": event.model_dump(mode="json")}
             )
-        # Keep the connection alive — wait for client disconnect
         while True:
             await ws.receive_text()
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, WSD):
         ws_manager.manager.disconnect(ws)
+    finally:
+        if tok is not None:
+            reset_workspace_id(tok)

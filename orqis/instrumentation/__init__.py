@@ -49,11 +49,9 @@ def init(
 
     # Allow env var as fallback for api_key (standard 12-factor pattern)
     resolved_key = api_key or os.getenv("ORQIS_API_KEY", "")
-    if not resolved_key:
-        logger.warning(
-            "orqis.init() called without an API key. "
-            "Events will still be sent to the local backend if running."
-        )
+    if resolved_key:
+        from .. import config
+        config.INGEST_API_KEY = resolved_key
 
     # Override config values if provided
     if backend_url:

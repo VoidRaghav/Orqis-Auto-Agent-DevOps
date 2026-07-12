@@ -17,6 +17,7 @@ from typing import Optional
 
 from ...backend import store, ws_manager
 from ...backend.models import Incident, IncidentStatus
+from ...backend.tenancy import get_workspace_id
 from . import apply_diff, client
 
 _BRANCH_PREFIX = "orqis/fix-"
@@ -139,7 +140,7 @@ async def open_fix_pr(incident: Incident) -> None:
         )
         if updated:
             await ws_manager.manager.broadcast(
-                "incident.updated", updated.model_dump(mode="json")
+                "incident.updated", updated.model_dump(mode="json"), workspace_id=get_workspace_id()
             )
             from ...backend import changelog
 
@@ -239,7 +240,7 @@ async def open_fix_pr(incident: Incident) -> None:
     )
     if updated:
         await ws_manager.manager.broadcast(
-            "incident.pr_opened", updated.model_dump(mode="json")
+            "incident.pr_opened", updated.model_dump(mode="json"), workspace_id=get_workspace_id()
         )
         from ...backend import changelog
 
@@ -310,7 +311,7 @@ async def mark_resolved(
 
     if updated:
         await ws_manager.manager.broadcast(
-            "incident.resolved", updated.model_dump(mode="json")
+            "incident.resolved", updated.model_dump(mode="json"), workspace_id=get_workspace_id()
         )
         from ...backend import changelog
 

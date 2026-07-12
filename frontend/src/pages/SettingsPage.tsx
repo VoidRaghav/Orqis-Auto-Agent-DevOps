@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { GithubConnectInfo, IdeSetupInfo, WorkspaceSettings } from "@/lib/types";
+import type { GithubConnectInfo, IdeSetupInfo, WorkspaceAuditEntry, WorkspaceSettings } from "@/lib/types";
 import DashboardNav from "@/dashboard/components/DashboardNav";
 import OpsAmbientLayer from "@/dashboard/components/OpsAmbientLayer";
 import { resolveOpsMood } from "@/dashboard/components/ops-ambient";
 import { colors, mono, inter } from "@/lib/tokens";
-import { API_URL } from "@/lib/env";
+import { API_URL, MULTI_TENANT } from "@/lib/env";
 
 const C = {
   green: colors.green,
@@ -38,11 +38,26 @@ export default function SettingsPage() {
     setAdminToken(localStorage.getItem(ADMIN_TOKEN_KEY) ?? "");
   }, []);
 
+  const [apiKeys, setApiKeys] = useState<{ id: string; prefix: string; label: string }[]>([]);
+  const [newKey, setNewKey] = useState<string | null>(null);
+  const [auditLog, setAuditLog] = useState<WorkspaceAuditEntry[]>([]);
+  const [members, setMembers] = useState<{ github_id: number; login: string; role: string }[]>([]);
+  const [pendingInvites, setPendingInvites] = useState<{ token: string; url?: string; created_at: string }[]>([]);
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+
+  const fetchOpts = (): RequestInit => ({
+    credentials: MULTI_TENANT ? "include" : "same-origin",
+    headers: {
+      ...(adminToken ? { "X-Orqis-Admin-Token": adminToken } : {}),
+    },
+  });
+
   const load = useCallback(async () => {
     try {
+      const opts = fetchOpts();
       const [g, s, ide] = await Promise.all([
-        fetch(`${API_URL}/integrations/github/connect`).then((r) => r.json()),
-        fetch(`${API_URL}/settings`).then((r) => r.json()),
+        fetch(`${API_URL}/integrations/github/connect`, opts).then((r) => r.json()),
+        fetch(`${API_URL}/settings`, opts).then((r) => r.json()),
         fetch(`${API_URL}/integrations/ide-setup`).then((r) => r.json()),
       ]);
       setGithub(g);
@@ -55,6 +70,23 @@ export default function SettingsPage() {
         })),
       );
       setBackendOk(true);
+      if (MULTI_TENANT) {
+        const [keys, audit, mems, invites] = await Promise.all([
+          fetch(`${API_URL}/workspace/api-keys`, opts).then((r) => (r.ok ? r.json() : [])),
+          fetch(`${API_URL}/workspace/audit?limit=30`, opts).then((r) => (r.ok ? r.json() : [])),
+          fetch(`${API_URL}/workspace/members`, opts).then((r) => (r.ok ? r.json() : [])),
+          fetch(`${API_URL}/workspace/invites`, opts).then((r) => (r.ok ? r.json() : [])),
+        ]);
+        setApiKeys(keys);
+        setAuditLog(audit);
+        setMembers(mems);
+        setPendingInvites(
+          invites.map((inv: { token: string; created_at: string }) => ({
+            ...inv,
+            url: `${window.location.origin}/invite/${inv.token}`,
+          })),
+        );
+      }
     } catch {
       setBackendOk(false);
       setStatus({ kind: "err", msg: "Backend unreachable." });
@@ -96,6 +128,7 @@ export default function SettingsPage() {
       };
       const r = await fetch(`${API_URL}/settings`, {
         method: "PUT",
+        ...fetchOpts(),
         headers: {
           "Content-Type": "application/json",
           ...(adminToken ? { "X-Orqis-Admin-Token": adminToken } : {}),
@@ -126,10 +159,15 @@ export default function SettingsPage() {
       mcpServers: {
         orqis: {
           ...server,
-          env: {
-            ...server.env,
-            ORQIS_ADMIN_TOKEN: adminToken || server.env?.ORQIS_ADMIN_TOKEN || "",
-          },
+          env: MULTI_TENANT
+            ? {
+                ...server.env,
+                ORQIS_API_KEY: newKey || server.env?.ORQIS_API_KEY || "<workspace-api-key>",
+              }
+            : {
+                ...server.env,
+                ORQIS_ADMIN_TOKEN: adminToken || server.env?.ORQIS_ADMIN_TOKEN || "",
+              },
         },
       },
     };
@@ -187,6 +225,132 @@ export default function SettingsPage() {
               </div>
             )}
           </Card>
+
+          {MULTI_TENANT && (
+            <Card title="Team" accent={C.blue}>
+              <Hint>Invite teammates — they sign in with GitHub to join this workspace.</Hint>
+              <ul className="settings-ide-list">
+                {members.map((m) => (
+                  <li key={m.github_id}>
+                    <span>
+                      {m.login}{" "}
+                      <span className="settings-muted">({m.role})</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                className="settings-btn settings-btn-ghost"
+                onClick={async () => {
+                  const r = await fetch(`${API_URL}/workspace/invites`, {
+                    method: "POST",
+                    ...fetchOpts(),
+                  });
+                  if (r.ok) {
+                    const data = await r.json();
+                    setInviteUrl(data.url);
+                    await load();
+                  } else {
+                    setStatus({ kind: "err", msg: await r.text() });
+                  }
+                }}
+              >
+                Create invite link
+              </button>
+              {inviteUrl && (
+                <div className="settings-banner settings-banner-ok" style={{ wordBreak: "break-all" }}>
+                  Share once: <code>{inviteUrl}</code>
+                </div>
+              )}
+              {pendingInvites.length > 0 && (
+                <ul className="settings-ide-list">
+                  {pendingInvites.map((inv) => (
+                    <li key={inv.token}>
+                      <span className="settings-ide-path">{inv.url}</span>
+                      <button
+                        type="button"
+                        className="settings-link-btn"
+                        onClick={async () => {
+                          await fetch(`${API_URL}/workspace/invites/${inv.token}`, {
+                            method: "DELETE",
+                            ...fetchOpts(),
+                          });
+                          await load();
+                        }}
+                      >
+                        Revoke
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          )}
+
+          {MULTI_TENANT && (
+            <Card title="Ingest API keys" accent={C.amber}>
+              <Hint>Use in orqis.init(api_key=…) or Authorization: Bearer</Hint>
+              {newKey && (
+                <div className="settings-banner settings-banner-ok" style={{ wordBreak: "break-all" }}>
+                  Copy now — shown once: <code>{newKey}</code>
+                </div>
+              )}
+              <ul className="settings-ide-list">
+                {apiKeys.map((k) => (
+                  <li key={k.id}>
+                    <span>{k.label}</span>
+                    <span className="settings-ide-path">{k.prefix}</span>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                className="settings-btn settings-btn-ghost"
+                onClick={async () => {
+                  const r = await fetch(`${API_URL}/workspace/api-keys?label=ingest`, {
+                    method: "POST",
+                    ...fetchOpts(),
+                  });
+                  if (r.ok) {
+                    const data = await r.json();
+                    setNewKey(data.key);
+                    await load();
+                  }
+                }}
+              >
+                Generate key
+              </button>
+            </Card>
+          )}
+
+          {MULTI_TENANT && (
+            <Card title="Audit log" accent={C.dim} wide>
+              <Hint>Recent workspace write actions (30 days retention)</Hint>
+              {auditLog.length === 0 ? (
+                <span className="settings-muted">No audit entries yet.</span>
+              ) : (
+                <ul className="settings-audit-list">
+                  {auditLog.map((entry) => (
+                    <li key={entry.id} className="settings-audit-row">
+                      <span className="settings-audit-time">
+                        {new Date(entry.timestamp).toLocaleString()}
+                      </span>
+                      <span className="settings-audit-action" style={{ ...mono }}>
+                        {entry.action}
+                      </span>
+                      <span className="settings-audit-detail">
+                        {entry.resource_type}
+                        {entry.resource_id ? ` · ${entry.resource_id.slice(0, 12)}` : ""}
+                        {" · "}
+                        {entry.actor}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          )}
 
           <Card title="IDE / MCP" accent={C.green}>
             <Hint>One stdio server · all editors</Hint>
@@ -309,16 +473,22 @@ export default function SettingsPage() {
               </Card>
 
               <Card title="Admin" accent={C.dim}>
-                <Field label="Token">
-                  <input
-                    value={adminToken}
-                    onChange={(e) => setAdminToken(e.target.value)}
-                    type="password"
-                    className="settings-input"
-                    placeholder="ORQIS_ADMIN_TOKEN"
-                  />
-                </Field>
-                <Hint>Stored in browser only.</Hint>
+                {MULTI_TENANT ? (
+                  <Hint>Hosted multi-tenant uses session + API keys. Admin token is local dev only.</Hint>
+                ) : (
+                  <>
+                    <Field label="Token">
+                      <input
+                        value={adminToken}
+                        onChange={(e) => setAdminToken(e.target.value)}
+                        type="password"
+                        className="settings-input"
+                        placeholder="ORQIS_ADMIN_TOKEN"
+                      />
+                    </Field>
+                    <Hint>Stored in browser only.</Hint>
+                  </>
+                )}
               </Card>
             </>
           )}

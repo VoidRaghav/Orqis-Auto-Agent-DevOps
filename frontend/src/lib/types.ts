@@ -126,6 +126,18 @@ export interface ChangeLogEntry {
   diff: string | null;
 }
 
+export interface WorkspaceAuditEntry {
+  id: string;
+  workspace_id: string;
+  action: string;
+  actor: string;
+  resource_type: string;
+  resource_id: string;
+  detail: Record<string, unknown>;
+  ip: string;
+  timestamp: string;
+}
+
 export type WsPayload =
   | { type: "log.event";              data: LogEvent }
   | { type: "log.interpretation";     data: { event_id: string; interpretation: string } }

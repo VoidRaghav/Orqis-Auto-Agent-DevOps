@@ -71,9 +71,13 @@ GITHUB_APP_SLUG: str = os.getenv("GITHUB_APP_SLUG", "")
 # Public base URL of this Orqis backend (for webhook + post-install redirect links).
 PUBLIC_URL: str = os.getenv("ORQIS_PUBLIC_URL", "http://localhost:8000")
 
-# Admin token guarding settings mutations (PUT /settings/*). If empty, settings
-# writes are open (fine for local dev only — set this in production).
+# Admin token guarding write paths (incident actions, PUT /settings). Required
+# for dogfood and production — write endpoints return 401 when unset.
 ADMIN_TOKEN: str = os.getenv("ORQIS_ADMIN_TOKEN", "")
+
+# CI harness flags — block force=true approve overrides unless explicitly allowed.
+CI_MODE: bool = os.getenv("ORQIS_CI", "").lower() in ("1", "true", "yes")
+ALLOW_FORCE: bool = os.getenv("ORQIS_ALLOW_FORCE", "").lower() in ("1", "true", "yes")
 
 # Secret used to HMAC-sign outbound hot-reload callbacks so the user's app can
 # verify the payload genuinely came from Orqis.
@@ -83,3 +87,68 @@ RELOAD_SECRET: str = os.getenv("ORQIS_RELOAD_SECRET", "")
 # ORQIS_ADMIN_TOKEN is unset, and GitHub webhooks require GITHUB_WEBHOOK_SECRET.
 # Default true for local dev; set ORQIS_DEV_MODE=0 in production.
 DEV_MODE: bool = os.getenv("ORQIS_DEV_MODE", "1").lower() in ("1", "true", "yes")
+
+# Multi-tenant hosted mode: per-workspace isolation, session + API-key auth.
+# Default off — local single-tenant uses workspace "default" with no login.
+MULTI_TENANT: bool = os.getenv("ORQIS_MULTI_TENANT", "0").lower() in ("1", "true", "yes")
+
+# Hosted SKU: disable local-disk patch apply (PR-only fixes).
+HOSTED: bool = os.getenv("ORQIS_HOSTED", "0").lower() in ("1", "true", "yes")
+
+# --- Dashboard session (GitHub OAuth) -----------------------------------------
+GITHUB_OAUTH_CLIENT_ID: str = os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
+GITHUB_OAUTH_CLIENT_SECRET: str = os.getenv("GITHUB_OAUTH_CLIENT_SECRET", "")
+SESSION_SECRET: str = os.getenv(
+    "ORQIS_SESSION_SECRET",
+    os.getenv("ORQIS_ADMIN_TOKEN", "") or "orqis-dev-session-change-me",
+)
+SESSION_COOKIE_NAME: str = os.getenv("ORQIS_SESSION_COOKIE", "orqis_session")
+SESSION_COOKIE_SECURE: bool = os.getenv("ORQIS_SESSION_SECURE", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+# Per-workspace ingest rate limit (requests per minute). 0 = unlimited.
+INGEST_RATE_LIMIT_PER_MIN: int = int(os.getenv("ORQIS_INGEST_RATE_LIMIT", "600") or "600")
+
+# Max request body size for ingest/drain (bytes). 0 = unlimited.
+MAX_INGEST_BODY_BYTES: int = int(os.getenv("ORQIS_MAX_INGEST_BODY_BYTES", "2097152") or "2097152")
+
+# Set at runtime by orqis.init() — sent as Bearer on trace POSTs
+INGEST_API_KEY: str = os.getenv("ORQIS_API_KEY", "")
+
+
+def validate_multi_tenant_startup() -> None:
+    """Fail fast when multi-tenant production config is unsafe."""
+    if not MULTI_TENANT:
+        return
+    weak_secrets = {
+        "",
+        "orqis-dev-session-change-me",
+        ADMIN_TOKEN,
+    }
+    if len(SESSION_SECRET) < 32 or SESSION_SECRET in weak_secrets:
+        msg = (
+            "[orqis] ORQIS_SESSION_SECRET must be a random string of at least 32 "
+            "characters when ORQIS_MULTI_TENANT=1"
+        )
+        if DEV_MODE:
+            print(f"{msg} (allowed in dev mode only)")
+        else:
+            raise RuntimeError(msg)
+    if not DEV_MODE:
+        if not GITHUB_OAUTH_CLIENT_ID or not GITHUB_OAUTH_CLIENT_SECRET:
+            raise RuntimeError(
+                "[orqis] GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET are "
+                "required when ORQIS_MULTI_TENANT=1 and ORQIS_DEV_MODE=0"
+            )
+        if HOSTED and not SESSION_COOKIE_SECURE:
+            raise RuntimeError(
+                "[orqis] ORQIS_SESSION_SECURE=1 is required when ORQIS_HOSTED=1"
+            )
+        if HOSTED and ADMIN_TOKEN:
+            raise RuntimeError(
+                "[orqis] ORQIS_ADMIN_TOKEN must not be set when ORQIS_HOSTED=1 "
+                "(use per-workspace session auth only)"
+            )

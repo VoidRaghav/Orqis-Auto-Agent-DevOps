@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "orqis": {
+      "command": "orqis",
+      "args": ["mcp", "--backend-url", "http://localhost:8000"],
+      "env": {
+        "ORQIS_ADMIN_TOKEN": ""
+      }
+    }
+  }
+}

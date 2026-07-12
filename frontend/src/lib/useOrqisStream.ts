@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useReducer, useCallback } from "react";
 import type { LogEvent, TraceEvent, Incident, WsPayload, ChangeLogEntry, GithubConnectInfo } from "./types";
+import { MULTI_TENANT } from "./env";
 
 const MAX_EVENTS = 500;
 export const ADMIN_TOKEN_KEY = "orqis_admin_token";
@@ -10,6 +11,13 @@ export function adminHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {};
   const token = localStorage.getItem(ADMIN_TOKEN_KEY);
   return token ? { "X-Orqis-Admin-Token": token } : {};
+}
+
+function apiInit(): RequestInit {
+  return {
+    credentials: MULTI_TENANT ? "include" : "same-origin",
+    headers: { ...adminHeaders() },
+  };
 }
 
 interface State {
@@ -89,7 +97,7 @@ export function useOrqisStream(wsUrl: string, apiUrl: string) {
 
   const refreshGithub = useCallback(async () => {
     try {
-      const r = await fetch(`${apiUrl}/integrations/github/connect`);
+      const r = await fetch(`${apiUrl}/integrations/github/connect`, apiInit());
       if (!r.ok) return;
       const github: GithubConnectInfo = await r.json();
       dispatch({ type: "github_loaded", github });
@@ -98,10 +106,24 @@ export function useOrqisStream(wsUrl: string, apiUrl: string) {
     }
   }, [apiUrl]);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    const ws = new WebSocket(wsUrl);
+    let url = wsUrl;
+    if (MULTI_TENANT) {
+      try {
+        const r = await fetch(`${apiUrl}/auth/ws-ticket`, apiInit());
+        if (r.ok) {
+          const { ticket } = await r.json();
+          const sep = wsUrl.includes("?") ? "&" : "?";
+          url = `${wsUrl}${sep}ticket=${encodeURIComponent(ticket)}`;
+        }
+      } catch {
+        // fall through — server will reject if auth required
+      }
+    }
+
+    const ws = new WebSocket(url);
     wsRef.current = ws;
 
     ws.onopen = () => dispatch({ type: "connected" });
@@ -150,18 +172,18 @@ export function useOrqisStream(wsUrl: string, apiUrl: string) {
         }
       } catch {}
     };
-  }, [wsUrl]);
+  }, [wsUrl, apiUrl]);
 
-  // Fetch recent incidents, the change log, and the GitHub connection on mount
   useEffect(() => {
-    fetch(`${apiUrl}/incidents?limit=50`)
+    const init = apiInit();
+    fetch(`${apiUrl}/incidents?limit=50`, init)
       .then(r => r.json())
       .then((list: Incident[]) => {
         list.forEach(incident => dispatch({ type: "incident_upsert", incident }));
       })
       .catch(() => {});
 
-    fetch(`${apiUrl}/changes?limit=100`, { headers: adminHeaders() })
+    fetch(`${apiUrl}/changes?limit=100`, init)
       .then(r => r.json())
       .then((list: ChangeLogEntry[]) => {
         dispatch({ type: "changes_loaded", changes: [...list].reverse() });
@@ -188,42 +210,39 @@ export function useOrqisStream(wsUrl: string, apiUrl: string) {
     };
   }, [connect]);
 
+  const postInit = (): RequestInit => ({
+    method: "POST",
+    credentials: MULTI_TENANT ? "include" : "same-origin",
+    headers: adminHeaders(),
+  });
+
   const approveIncident = useCallback(async (id: string, force = false) => {
     const url = `${apiUrl}/incidents/${id}/approve${force ? "?force=true" : ""}`;
-    const r = await fetch(url, { method: "POST", headers: adminHeaders() });
+    const r = await fetch(url, postInit());
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   }, [apiUrl]);
 
   const dismissIncident = useCallback(async (id: string) => {
-    const r = await fetch(`${apiUrl}/incidents/${id}/dismiss`, {
-      method: "POST",
-      headers: adminHeaders(),
-    });
+    const r = await fetch(`${apiUrl}/incidents/${id}/dismiss`, postInit());
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   }, [apiUrl]);
 
   const openPr = useCallback(async (id: string) => {
-    const r = await fetch(`${apiUrl}/incidents/${id}/open-pr`, {
-      method: "POST",
-      headers: adminHeaders(),
-    });
+    const r = await fetch(`${apiUrl}/incidents/${id}/open-pr`, postInit());
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   }, [apiUrl]);
 
   const resolveIncident = useCallback(async (id: string) => {
-    const r = await fetch(`${apiUrl}/incidents/${id}/resolve`, {
-      method: "POST",
-      headers: adminHeaders(),
-    });
+    const r = await fetch(`${apiUrl}/incidents/${id}/resolve`, postInit());
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   }, [apiUrl]);
 
   const copyPrompt = useCallback(async (id: string): Promise<string> => {
-    const r = await fetch(`${apiUrl}/incidents/${id}/prompt`);
+    const r = await fetch(`${apiUrl}/incidents/${id}/prompt`, apiInit());
     if (!r.ok) throw new Error(await r.text());
     const data = await r.json();
     return data.prompt as string;

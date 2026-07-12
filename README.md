@@ -163,6 +163,21 @@ log line arrives → pattern_matcher classifies (~0.1ms)
                      → you approve or dismiss
 ```
 
+## Dogfood testing
+
+Validate Orqis against a separate buggy user project (`orqis-test-agent`) with a two-tier pytest harness (pipeline integration + optional Cursor SDK agent flow).
+
+```bash
+export ORQIS_PROJECT_ROOT=/path/to/orqis-test-agent   # or use ./test-agent
+export ORQIS_ADMIN_TOKEN=<required>
+orqis start                                           # separate terminal
+make test-agent                                       # or scripts/run_dogfood.sh / run_dogfood.ps1
+```
+
+Full setup, security rules (including never dogfooding with production GitHub PEM on the same host), and pytest tiers: **[docs/dogfood.md](docs/dogfood.md)**.
+
+---
+
 ## Environment variables
 
 | Variable | Default | Description |
