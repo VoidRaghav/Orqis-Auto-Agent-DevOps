@@ -84,10 +84,14 @@ async def lifespan(app: FastAPI):
     # Safety net: reconcile any incidents stuck in pr_open whose merge webhook
     # was missed or misconfigured (U1/P4). Runs every 5 minutes.
     poll_task = asyncio.create_task(_poll_open_prs_loop())
+    # Watchdog: catch agents that went silent (stuck / zero-output). This is the
+    # one detector driven by a timer, since a stuck agent emits nothing to react to.
+    watchdog_task = asyncio.create_task(_stuck_watchdog_loop())
     try:
         yield
     finally:
         poll_task.cancel()
+        watchdog_task.cancel()
 
 
 async def _poll_open_prs_loop() -> None:
@@ -101,6 +105,22 @@ async def _poll_open_prs_loop() -> None:
             break
         except Exception:
             # Never let the reconciler crash the server loop.
+            pass
+
+
+async def _stuck_watchdog_loop() -> None:
+    from ..rca import stuck
+    from ..rca.pipeline import trigger_stuck
+
+    while True:
+        try:
+            await asyncio.sleep(3)
+            for signal in await stuck.sweep():
+                asyncio.create_task(trigger_stuck(signal))
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            # Never let the watchdog crash the server loop.
             pass
 
 
@@ -269,10 +289,26 @@ async def receive_trace(event: TraceEvent):
     """
     import asyncio
 
-    from ..rca import anomaly
+    from ..rca import (
+        anomaly, binding_drop, cascade, corruption, cost_spike, generic,
+        hallucination, injection, overflow, pingpong, retry_storm, stuck,
+        wrong_tool,
+    )
 
     await store.save_trace_event(event)
     await ws_manager.manager.broadcast("trace.event", event.model_dump(mode="json"))
+
+    # Watchdog bookkeeping: record operation start/end so the background sweep
+    # can spot one that starts and then goes silent (stuck / zero-output).
+    await stuck.observe(event)
+
+    # Behavioural detection: two agents bouncing a task back and forth. Checked
+    # before the loop detector so a ping-pong is classified as itself, not
+    # mislabelled as one agent looping.
+    pong = await pingpong.observe(event)
+    if pong is not None:
+        from ..rca.pipeline import trigger_pingpong
+        asyncio.create_task(trigger_pingpong(pong))
 
     # Behavioural detection: watch the live stream for a runaway tool loop.
     # This fires no exception — it is only visible here, in the stream itself.
@@ -280,6 +316,74 @@ async def receive_trace(event: TraceEvent):
     if signal is not None:
         from ..rca.pipeline import trigger_anomaly
         asyncio.create_task(trigger_anomaly(signal))
+
+    # Behavioural detection: a tool that normally returns structured data starts
+    # returning empty/degenerate payloads the agent consumes without validating.
+    corrupt = await corruption.observe(event)
+    if corrupt is not None:
+        from ..rca.pipeline import trigger_corruption
+        asyncio.create_task(trigger_corruption(corrupt))
+
+    # Behavioural detection: per-call tokens climbing far above the agent's
+    # baseline (unbounded memory / context never trimmed).
+    spike = await cost_spike.observe(event)
+    if spike is not None:
+        from ..rca.pipeline import trigger_cost_spike
+        asyncio.create_task(trigger_cost_spike(spike))
+
+    # Behavioural detection: per-call tokens at/over the model's context window,
+    # so the prompt is silently truncated (a correctness failure, not just cost).
+    of = await overflow.observe(event)
+    if of is not None:
+        from ..rca.pipeline import trigger_overflow
+        asyncio.create_task(trigger_overflow(of))
+
+    # Security detection: an injection in the input pushed the agent into a tool
+    # outside its allowed set — the behaviour diverged and the injection worked.
+    inj = await injection.observe(event)
+    if inj is not None:
+        from ..rca.pipeline import trigger_injection
+        asyncio.create_task(trigger_injection(inj))
+
+    # Behavioural detection: the model invoked a tool that isn't registered —
+    # a hallucinated tool that does no real work.
+    halluc = await hallucination.observe(event)
+    if halluc is not None:
+        from ..rca.pipeline import trigger_hallucination
+        asyncio.create_task(trigger_hallucination(halluc))
+
+    # Behavioural detection: a destructive/write tool run for a read-only request.
+    wrong = await wrong_tool.observe(event)
+    if wrong is not None:
+        from ..rca.pipeline import trigger_wrong_tool
+        asyncio.create_task(trigger_wrong_tool(wrong))
+
+    # Behavioural detection: a degenerate output poisoning a multi-agent pipeline.
+    casc = await cascade.observe(event)
+    if casc is not None:
+        from ..rca.pipeline import trigger_cascade
+        asyncio.create_task(trigger_cascade(casc))
+
+    # Catch-all LAST: a novel anomaly no named detector claimed. Checked after
+    # the specific detectors so it can defer to them.
+    anom = await generic.observe(event)
+    if anom is not None:
+        from ..rca.pipeline import trigger_generic
+        asyncio.create_task(trigger_generic(anom))
+
+    # Behavioural detection: a transient failure retried with no backoff — the
+    # call succeeds, so nothing surfaces, but the retries bleed cost silently.
+    storm = await retry_storm.observe(event)
+    if storm is not None:
+        from ..rca.pipeline import trigger_retry_storm
+        asyncio.create_task(trigger_retry_storm(storm))
+
+    # Behavioural detection: a tool was bound but the chain returned structured
+    # output without ever invoking it (the LangChain bind/structured-output drop).
+    drop = await binding_drop.observe(event)
+    if drop is not None:
+        from ..rca.pipeline import trigger_binding_drop
+        asyncio.create_task(trigger_binding_drop(drop))
 
     if event.is_error and event.error_message:
         from ..daemon.interpreter import fallback
@@ -306,8 +410,10 @@ async def receive_trace(event: TraceEvent):
             ))
 
     # circuit_break tells the calling agent to stop: Orqis has confirmed a
-    # runaway loop on this source. This is the closed-loop kill switch.
-    return {"id": event.id, "circuit_break": anomaly.is_tripped(event.source)}
+    # runaway loop or a multi-agent ping-pong on this source. The closed-loop
+    # kill switch — ping-pong trips both agents so the orchestrator halts.
+    tripped = anomaly.is_tripped(event.source) or pingpong.is_tripped(event.source)
+    return {"id": event.id, "circuit_break": tripped}
 
 
 async def _interpret_trace(event_id: str, error_message: str, error_type) -> None:
@@ -609,9 +715,18 @@ async def demo_reset(clear: bool = False):
     Pass ?clear=true to also delete all stored incidents and tell the dashboard
     to empty its list — used once to wipe accumulated demo runs.
     """
-    from ..rca import anomaly
+    from ..rca import (
+        anomaly, binding_drop, cascade, corruption, cost_spike, generic,
+        hallucination, injection, overflow, pingpong, retry_storm, stuck,
+        wrong_tool,
+    )
 
-    anomaly.reset()
+    for mod in (anomaly, corruption, cost_spike, retry_storm, binding_drop,
+                pingpong, overflow, injection, stuck, hallucination, wrong_tool,
+                cascade, generic):
+        mod.reset()
+    from ..rca import pipeline
+    pipeline.reset_fix_router()
 
     if clear:
         counts = await store.clear_all()

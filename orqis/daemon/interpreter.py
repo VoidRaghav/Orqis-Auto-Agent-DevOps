@@ -60,13 +60,30 @@ async def interpret(raw_line: str, error_type: Optional[ErrorType] = None) -> st
     if key in _cache:
         return _cache[key]
 
-    if config.LLM_PROVIDER == "anthropic":
+    # Gemini first when configured (one key for the whole LLM layer), then
+    # Anthropic if selected, else free local Ollama.
+    if config.GEMINI_API_KEY:
+        result = await _call_gemini(raw_line, error_type)
+    elif config.LLM_PROVIDER == "anthropic":
         result = await _call_anthropic(raw_line, error_type)
     else:
         result = await _call_ollama(raw_line, error_type)
 
     _cache[key] = result
     return result
+
+
+async def _call_gemini(raw_line: str, error_type: Optional[ErrorType]) -> str:
+    """Call Gemini for a one-line interpretation. Falls back to static text."""
+    from .. import llm
+
+    context = f"Error type: {error_type.value}\n" if error_type else ""
+    user_content = f"{context}Log line:\n{raw_line}"
+    result = await llm.generate(
+        user_content, _SYSTEM_PROMPT, config.GEMINI_INTERPRET_MODEL,
+        max_tokens=config.LLM_MAX_TOKENS,
+    )
+    return result if result else _fallback(error_type)
 
 
 async def _call_ollama(raw_line: str, error_type: Optional[ErrorType]) -> str:
@@ -133,6 +150,18 @@ _FALLBACKS: dict[ErrorType, str] = {
     ErrorType.RATE_LIMIT: "The LLM API rejected the request because the rate limit or quota was exceeded.",
     ErrorType.TOOL_FAILURE: "An agent tool call failed to execute and returned an error.",
     ErrorType.RUNAWAY_LOOP: "The agent kept calling the same tool with no exit condition, burning tokens and money without making progress.",
+    ErrorType.CORRUPT_TOOL_OUTPUT: "A tool that normally returns structured data returned an empty payload, and the agent consumed it without validating — corrupting every downstream step with no error raised.",
+    ErrorType.COST_SPIKE: "Per-call token usage climbed far above the agent's baseline because its memory is never trimmed — the context, and the bill, grow with every turn while nothing errors.",
+    ErrorType.RETRY_STORM: "A tool kept failing with transient errors and was retried with no backoff until it eventually succeeded — the user got an answer, but each call silently cost several times what it should and hammered a struggling API.",
+    ErrorType.TOOL_BINDING_DROP: "A tool was bound to the model but the chain returned structured output without ever invoking it — the model filled in valid-looking JSON itself, so the tool's actual work never happened and nothing looked wrong.",
+    ErrorType.MULTI_AGENT_PINGPONG: "Two agents handed the task back and forth with no resolver or turn limit, so it bounced between them indefinitely — each agent looked busy and healthy while the orchestration made no progress and burned cost.",
+    ErrorType.CONTEXT_OVERFLOW: "The prompt is larger than the model's context window, so the API silently truncates it — usually dropping the system instructions — and the agent answers off-policy with no error raised.",
+    ErrorType.PROMPT_INJECTION: "A user input told the agent to ignore its instructions and it obeyed — invoking a tool outside its established, allowed set. The behaviour diverged from the norm with no error raised.",
+    ErrorType.AGENT_STUCK: "An operation started and then went silent — the agent is stuck waiting on something that never resolves, making no progress and producing no output, with no error raised.",
+    ErrorType.HALLUCINATED_TOOL: "The model invoked a tool that isn't in the registered set — it hallucinated a tool that doesn't exist. The call did no real work, and depending on the setup it either threw or failed silently.",
+    ErrorType.WRONG_TOOL: "The agent invoked a destructive or write tool for a read-only request — asked to look something up, it changed or sent something instead. No error was raised, but the wrong, often harmful, action was taken.",
+    ErrorType.CASCADE_FAILURE: "One agent produced a degenerate output and a downstream agent consumed it and carried on, so a single bad result poisoned the whole pipeline. Each agent looked fine on its own; only the chain failed.",
+    ErrorType.ANOMALY: "This run deviated sharply from the agent's own established baseline — far more calls, tokens, or cost than normal — a symptom of a failure that no specific detector named, possibly a new one.",
     ErrorType.TYPE_ERROR: "A function received an argument of the wrong type.",
     ErrorType.VALUE_ERROR: "A function received an argument with an unacceptable value.",
     ErrorType.ATTRIBUTE_ERROR: "Code attempted to access a property that does not exist on the object.",

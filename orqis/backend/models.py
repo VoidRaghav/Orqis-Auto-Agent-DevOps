@@ -33,6 +33,54 @@ class ErrorType(str, Enum):
     # Behavioural anomaly: an agent calling the same tool with no exit condition.
     # No exception is ever raised — only the live trace stream reveals it.
     RUNAWAY_LOOP = "RUNAWAY_LOOP"
+    # Behavioural anomaly: a tool that normally returns structured data starts
+    # returning an empty/degenerate payload and the agent consumes it without
+    # validating. No exception — the corruption just propagates downstream.
+    CORRUPT_TOOL_OUTPUT = "CORRUPT_TOOL_OUTPUT"
+    # Behavioural anomaly: per-call token usage climbs far above the agent's own
+    # baseline (unbounded memory / context not trimmed). No exception — the bill
+    # just inflates, gradually, until someone notices.
+    COST_SPIKE = "COST_SPIKE"
+    # Behavioural anomaly: a tool is silently retried past a sane count because a
+    # transient failure (timeout / 429 / 503) is retried with no backoff. The
+    # call eventually succeeds, so nothing surfaces — it just bleeds time + money.
+    RETRY_STORM = "RETRY_STORM"
+    # Behavioural anomaly: a tool was bound/expected but the chain returned a
+    # structured answer without ever invoking it (the LangChain bind + structured
+    # output drop). Valid-looking JSON, but the tool's work never happened.
+    TOOL_BINDING_DROP = "TOOL_BINDING_DROP"
+    # Behavioural anomaly: two agents hand a task back and forth (A->B->A->B)
+    # with no resolver or turn limit. Neither is looping alone — the orchestration
+    # is — so it reads as normal per-agent activity while cost bleeds.
+    MULTI_AGENT_PINGPONG = "MULTI_AGENT_PINGPONG"
+    # Behavioural anomaly: per-call input tokens sit at/over the model's context
+    # window, so the API silently truncates the context (often the system
+    # instructions) and the agent answers off-policy. No error, just clipped input.
+    CONTEXT_OVERFLOW = "CONTEXT_OVERFLOW"
+    # Security anomaly: a user input carried an injection ("ignore previous
+    # instructions...") and the agent obeyed — calling a tool outside its
+    # established, allowed set. Behaviour diverged; no error was raised.
+    PROMPT_INJECTION = "PROMPT_INJECTION"
+    # Behavioural anomaly: an operation started and then went silent — the agent
+    # is stuck waiting on something that never resolves. No error, no output,
+    # just no progress. Only the absence of events reveals it.
+    AGENT_STUCK = "AGENT_STUCK"
+    # Behavioural anomaly: the model invoked a tool that isn't in the registered
+    # set — it hallucinated a tool that doesn't exist. Sometimes throws, often
+    # fails silently; either way the tool's work never happened.
+    HALLUCINATED_TOOL = "HALLUCINATED_TOOL"
+    # Behavioural anomaly: the agent invoked a destructive/write tool for a
+    # read-only request (asked to "check", it "sent"/"deleted"). No error, just
+    # the wrong — and often harmful — action.
+    WRONG_TOOL = "WRONG_TOOL"
+    # Behavioural anomaly: one agent produced a degenerate output that a
+    # downstream agent consumed and passed on — a bad result poisoning the whole
+    # pipeline. Each agent looks fine alone; only the chain fails.
+    CASCADE_FAILURE = "CASCADE_FAILURE"
+    # Catch-all: a run deviated sharply from this source's own established
+    # baseline (calls, tokens, or cost) in a way no specific detector named. A
+    # symptom of *some* failure — including new, unknown ones.
+    ANOMALY = "ANOMALY"
     GENERIC = "GENERIC"
 
 
@@ -94,6 +142,24 @@ class TraceEvent(BaseModel):
     # invoking the same tool with the same arguments over and over.
     tool_name: Optional[str] = None
     tool_args: Optional[str] = None
+    # The tool's returned payload (JSON string) when the SDK captures it. Lets
+    # the corruption detector spot an empty/degenerate result the agent consumed
+    # without ever raising an exception.
+    tool_result: Optional[str] = None
+    # Structured-output / tool-binding integrity. bound_tools lists the tools the
+    # SDK bound for this call; tool_invoked says whether one actually ran this
+    # turn; structured_output flags a call that returned a structured object.
+    # Together they catch a bound tool the chain silently never invoked.
+    bound_tools: Optional[list[str]] = None
+    tool_invoked: Optional[bool] = None
+    structured_output: Optional[bool] = None
+    # Multi-agent hand-off edge: which agent passed the task to which. Lets the
+    # ping-pong detector see the A<->B alternation the loop detector is blind to.
+    handoff_from: Optional[str] = None
+    handoff_to: Optional[str] = None
+    # The user/prompt text that drove this call, when captured. Lets the injection
+    # detector correlate an out-of-policy tool call with an injection in the input.
+    input_text: Optional[str] = None
     # Where this call originates in the agent's source, "file.py:line:function".
     # Lets the RCA pipeline locate the loop without a traceback.
     code_location: Optional[str] = None
@@ -195,6 +261,11 @@ class Incident(BaseModel):
     # How the patch was produced: "deterministic" (libcst remediation, correct by
     # construction) or "llm" (model rewrite). Auto-merge is gated on this.
     fix_method: Optional[str] = None
+    # Scope of the fix, which sets the trust tier:
+    #   "guard"      — a small, local, verified change (auto-merge safe)
+    #   "structural" — an LLM rewrite, or a systemic pattern seen at >1 site
+    #                  (needs a human to review; never auto-merged)
+    fix_scope: Optional[str] = None
     # Repo-relative path of the file the fix touches (e.g. "demo/service.py"),
     # distinct from file_path which may be a deploy-absolute path like /app/demo/service.py.
     repo_relative_path: Optional[str] = None
