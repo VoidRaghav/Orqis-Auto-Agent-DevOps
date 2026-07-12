@@ -30,7 +30,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
@@ -119,10 +119,14 @@ async def lifespan(app: FastAPI):
     # Safety net: reconcile any incidents stuck in pr_open whose merge webhook
     # was missed or misconfigured (U1/P4). Runs every 5 minutes.
     poll_task = asyncio.create_task(_poll_open_prs_loop())
+    # Watchdog: catch agents that went silent (stuck / zero-output). This is the
+    # one detector driven by a timer, since a stuck agent emits nothing to react to.
+    watchdog_task = asyncio.create_task(_stuck_watchdog_loop())
     try:
         yield
     finally:
         poll_task.cancel()
+        watchdog_task.cancel()
 
 
 async def _poll_open_prs_loop() -> None:
@@ -136,6 +140,22 @@ async def _poll_open_prs_loop() -> None:
             break
         except Exception:
             # Never let the reconciler crash the server loop.
+            pass
+
+
+async def _stuck_watchdog_loop() -> None:
+    from ..rca import stuck
+    from ..rca.pipeline import trigger_stuck
+
+    while True:
+        try:
+            await asyncio.sleep(3)
+            for signal in await stuck.sweep():
+                asyncio.create_task(trigger_stuck(signal))
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            # Never let the watchdog crash the server loop.
             pass
 
 
@@ -545,7 +565,6 @@ async def receive_event(request: Request, event: LogEvent):
         await deps.resolve_ingest_workspace(request)
     else:
         await deps.bind_workspace("default")
-    import asyncio
     from ..rca.pipeline import _spawn, trigger
 
     await store.save_event(event)
@@ -598,18 +617,94 @@ async def receive_trace(request: Request, event: TraceEvent):
         await deps.resolve_ingest_workspace(request)
     else:
         await deps.bind_workspace("default")
-    import asyncio
-    from ..rca import anomaly
-    from ..rca.pipeline import _spawn, trigger, trigger_anomaly
+    from ..rca import (
+        anomaly, binding_drop, cascade, corruption, cost_spike, generic,
+        hallucination, injection, overflow, pingpong, retry_storm, stuck,
+        wrong_tool,
+    )
+    from ..rca.pipeline import (
+        _spawn, trigger, trigger_anomaly, trigger_binding_drop, trigger_cascade,
+        trigger_corruption, trigger_cost_spike, trigger_generic,
+        trigger_hallucination, trigger_injection, trigger_overflow,
+        trigger_pingpong, trigger_retry_storm, trigger_wrong_tool,
+    )
+    wid = get_workspace_id()
 
     await store.save_trace_event(event)
     await ws_manager.manager.broadcast(
         "trace.event", event.model_dump(mode="json"), workspace_id=get_workspace_id()
     )
 
+    # Watchdog: record op start/end so the background sweep can spot silence.
+    await stuck.observe(event)
+
+    # Ping-pong before the loop detector, so a two-agent bounce is classified as
+    # itself, not mislabelled as one agent looping.
+    pong = await pingpong.observe(event)
+    if pong is not None:
+        _spawn(trigger_pingpong(pong), workspace_id=wid)
+
     signal = await anomaly.observe(event)
     if signal is not None:
-        _spawn(trigger_anomaly(signal), workspace_id=get_workspace_id())
+        _spawn(trigger_anomaly(signal), workspace_id=wid)
+
+    # Behavioural detection: a tool that normally returns structured data starts
+    # returning empty/degenerate payloads the agent consumes without validating.
+    corrupt = await corruption.observe(event)
+    if corrupt is not None:
+        _spawn(trigger_corruption(corrupt), workspace_id=wid)
+
+    # Behavioural detection: per-call tokens climbing far above the agent's
+    # baseline (unbounded memory / context never trimmed).
+    spike = await cost_spike.observe(event)
+    if spike is not None:
+        _spawn(trigger_cost_spike(spike), workspace_id=wid)
+
+    # Behavioural detection: per-call tokens at/over the model's context window,
+    # so the prompt is silently truncated (a correctness failure, not just cost).
+    of = await overflow.observe(event)
+    if of is not None:
+        _spawn(trigger_overflow(of), workspace_id=wid)
+
+    # Security detection: an injection in the input pushed the agent into a tool
+    # outside its allowed set — the behaviour diverged and the injection worked.
+    inj = await injection.observe(event)
+    if inj is not None:
+        _spawn(trigger_injection(inj), workspace_id=wid)
+
+    # Behavioural detection: the model invoked a tool that isn't registered —
+    # a hallucinated tool that does no real work.
+    halluc = await hallucination.observe(event)
+    if halluc is not None:
+        _spawn(trigger_hallucination(halluc), workspace_id=wid)
+
+    # Behavioural detection: a destructive/write tool run for a read-only request.
+    wrong = await wrong_tool.observe(event)
+    if wrong is not None:
+        _spawn(trigger_wrong_tool(wrong), workspace_id=wid)
+
+    # Behavioural detection: a degenerate output poisoning a multi-agent pipeline.
+    casc = await cascade.observe(event)
+    if casc is not None:
+        _spawn(trigger_cascade(casc), workspace_id=wid)
+
+    # Catch-all LAST: a novel anomaly no named detector claimed. Checked after
+    # the specific detectors so it can defer to them.
+    anom = await generic.observe(event)
+    if anom is not None:
+        _spawn(trigger_generic(anom), workspace_id=wid)
+
+    # Behavioural detection: a transient failure retried with no backoff — the
+    # call succeeds, so nothing surfaces, but the retries bleed cost silently.
+    storm = await retry_storm.observe(event)
+    if storm is not None:
+        _spawn(trigger_retry_storm(storm), workspace_id=wid)
+
+    # Behavioural detection: a tool was bound but the chain returned structured
+    # output without ever invoking it (the LangChain bind/structured-output drop).
+    drop = await binding_drop.observe(event)
+    if drop is not None:
+        _spawn(trigger_binding_drop(drop), workspace_id=wid)
 
     if event.is_error and event.error_message:
         from ..daemon.interpreter import fallback
@@ -637,7 +732,10 @@ async def receive_trace(request: Request, event: TraceEvent):
                 workspace_id=get_workspace_id(),
             )
 
-    return {"id": event.id, "circuit_break": anomaly.is_tripped(event.source)}
+    # circuit_break tells the agent to stop — a confirmed runaway loop or a
+    # multi-agent ping-pong on this source (ping-pong trips both agents).
+    tripped = anomaly.is_tripped(event.source) or pingpong.is_tripped(event.source)
+    return {"id": event.id, "circuit_break": tripped}
 
 
 async def _interpret_trace(event_id: str, error_message: str, error_type) -> None:
@@ -1128,13 +1226,28 @@ async def update_settings(request: Request):
 
 @app.post("/demo/reset")
 async def demo_reset(request: Request, clear: bool = False):
+    """
+    Reset the demo so a run can re-trip: clears every detector's in-memory state.
+    The incident dedup table is intentionally NOT cleared, so repeated runs of the
+    same failure collapse into one incident (bumping its hit count). Pass
+    ?clear=true to also delete all stored incidents and empty the dashboard.
+    """
     if config.MULTI_TENANT:
         await deps.resolve_write_auth(request)
     else:
         await deps.bind_workspace("default")
-    from ..rca import anomaly
+    from ..rca import (
+        anomaly, binding_drop, cascade, corruption, cost_spike, generic,
+        hallucination, injection, overflow, pingpong, retry_storm, stuck,
+        wrong_tool,
+    )
 
-    anomaly.reset()
+    for mod in (anomaly, corruption, cost_spike, retry_storm, binding_drop,
+                pingpong, overflow, injection, stuck, hallucination, wrong_tool,
+                cascade, generic):
+        mod.reset()
+    from ..rca import pipeline
+    pipeline.reset_fix_router()
 
     if clear:
         counts = await store.clear_all()

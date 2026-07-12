@@ -16,6 +16,30 @@ ANTHROPIC_INTERPRET_MODEL: str = os.getenv("ANTHROPIC_INTERPRET_MODEL", "claude-
 # Patch + RCA generation is correctness-critical — use the strongest model.
 ANTHROPIC_PATCH_MODEL: str = os.getenv("ANTHROPIC_PATCH_MODEL", "claude-opus-4-8")
 
+# Google Gemini (paid). When GEMINI_API_KEY is set it is preferred over Anthropic
+# for both interpretation and patch generation — one key covers the whole LLM
+# layer. Called over the REST API (no SDK dependency).
+GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+# Interpretation is a one-sentence summary — a small, fast model is plenty.
+# The "-latest" aliases stay current so a model retirement never breaks us.
+GEMINI_INTERPRET_MODEL: str = os.getenv("GEMINI_INTERPRET_MODEL", "gemini-flash-lite-latest")
+# Patch + RCA generation is correctness-critical, but the deterministic libcst
+# remediations handle the known failure classes, so the LLM is only a fallback —
+# a free-tier flash model is plenty. Override for a stronger model if desired.
+GEMINI_PATCH_MODEL: str = os.getenv("GEMINI_PATCH_MODEL", "gemini-flash-latest")
+
+# Groq (free, fast) — OpenAI-compatible. The instant fallback when Gemini is
+# unavailable (e.g. a free-tier 503), so patch generation never depends on one
+# provider being up.
+GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+GROQ_PATCH_MODEL: str = os.getenv("GROQ_PATCH_MODEL", "llama-3.3-70b-versatile")
+GROQ_BASE_URL: str = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+
+# OpenAI (paid) — last-resort fallback, only used if a key is set.
+OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+OPENAI_PATCH_MODEL: str = os.getenv("OPENAI_PATCH_MODEL", "gpt-4o-mini")
+OPENAI_BASE_URL: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
 # Ollama (free, local) — only used when LLM_PROVIDER=ollama
 # Install: brew install ollama && ollama serve && ollama pull llama3.2:3b
 OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
