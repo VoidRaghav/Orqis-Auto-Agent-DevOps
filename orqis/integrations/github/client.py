@@ -188,11 +188,26 @@ async def commit_file(
     message: str,
     parent_sha: str,
 ) -> Optional[str]:
+    """Commit a single file — delegates to commit_files."""
+    return await commit_files(
+        installation_id, repo, branch, [(path, new_content)], message, parent_sha
+    )
+
+
+async def commit_files(
+    installation_id: int,
+    repo: str,
+    branch: str,
+    files: list[tuple[str, str]],
+    message: str,
+    parent_sha: str,
+) -> Optional[str]:
     """
-    Commit a single file change onto `branch` using the Git Data API:
-      blob -> tree (based on parent) -> commit -> update branch ref.
-    Returns the new commit sha or None. Committer is the app bot (O3).
+    Commit one or more file changes onto `branch` in a single commit.
+    files: list of (repo_relative_path, new_content).
     """
+    if not files:
+        return None
     headers = await _headers(installation_id)
     if headers is None:
         return None
@@ -201,24 +216,28 @@ async def commit_file(
     author = {"name": bot_name, "email": f"{bot_name}@users.noreply.github.com"}
 
     try:
-        async with httpx.AsyncClient(timeout=20.0) as http:
-            blob = await http.post(
-                f"{_GITHUB_API}/repos/{repo}/git/blobs",
-                headers=headers,
-                json={"content": new_content, "encoding": "utf-8"},
-            )
-            blob.raise_for_status()
-            blob_sha = blob.json()["sha"]
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            tree_entries = []
+            for path, new_content in files:
+                blob = await http.post(
+                    f"{_GITHUB_API}/repos/{repo}/git/blobs",
+                    headers=headers,
+                    json={"content": new_content, "encoding": "utf-8"},
+                )
+                blob.raise_for_status()
+                tree_entries.append(
+                    {
+                        "path": path,
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": blob.json()["sha"],
+                    }
+                )
 
             tree = await http.post(
                 f"{_GITHUB_API}/repos/{repo}/git/trees",
                 headers=headers,
-                json={
-                    "base_tree": parent_sha,
-                    "tree": [
-                        {"path": path, "mode": "100644", "type": "blob", "sha": blob_sha}
-                    ],
-                },
+                json={"base_tree": parent_sha, "tree": tree_entries},
             )
             tree.raise_for_status()
             tree_sha = tree.json()["sha"]

@@ -76,6 +76,12 @@ async def lifespan(app: FastAPI):
 
     config.validate_multi_tenant_startup()
 
+    from ..daemon import interpreter
+
+    llm = await interpreter.check_readiness()
+    if not llm.get("ok"):
+        print(f"[orqis] warning: LLM not ready ({llm.get('detail')})")
+
     if (
         not config.DEV_MODE
         and config.GITHUB_APP_ID
@@ -181,6 +187,13 @@ async def health():
         "ws_clients": ws_manager.manager.active_count,
         "multi_tenant": config.MULTI_TENANT,
     }
+
+
+@app.get("/health/ready")
+async def health_ready():
+    from ..backend import health as health_mod
+
+    return await health_mod.readiness()
 
 
 # --- Auth (GitHub OAuth + workspace sessions) ---------------------------------
@@ -444,6 +457,19 @@ async def revoke_workspace_api_key(request: Request, key_id: str):
         ip=request.client.host if request.client else None,
     )
     return {"ok": True}
+
+
+async def _ingest_lines(lines: list[str], source: str) -> dict:
+    flat: list[str] = []
+    for raw_line in lines:
+        flat.extend(normalizer.normalize(str(raw_line).encode()))
+    events = await log_reader.ingest_lines(flat or [str(x) for x in lines], source=source)
+    for event in events:
+        await store.save_event(event)
+        await ws_manager.manager.broadcast(
+            "log.event", event.model_dump(mode="json"), workspace_id=get_workspace_id()
+        )
+    return {"accepted": len(events)}
 
 
 @app.post("/drain", status_code=202)
@@ -742,6 +768,7 @@ async def ide_setup():
 
 @app.get("/integrations/github/connect")
 async def github_connect(request: Request):
+    from ..integrations.github import auth as gh_auth
     from ..integrations.github import install_state
 
     wid = await deps.resolve_dashboard_workspace(request)
@@ -754,7 +781,7 @@ async def github_connect(request: Request):
             f"?state={state}"
         )
     return {
-        "configured": bool(config.GITHUB_APP_ID and config.GITHUB_APP_SLUG),
+        "configured": gh_auth.is_configured(),
         "install_url": install_url,
         "connected": bool(settings.get("installation_id")),
         "account_login": settings.get("account_login"),
@@ -793,15 +820,9 @@ async def github_callback(
                         status_code=403,
                         detail="installation not accessible to this GitHub App",
                     )
-            repos = await gh_auth.list_installation_repos(installation_id)
-            account_login = await gh_auth.installation_account_login(installation_id)
-            await store.save_settings(
-                {
-                    "installation_id": installation_id,
-                    "repos": repos,
-                    "account_login": account_login,
-                }
-            )
+            from ..integrations.github import sync as gh_sync
+
+            await gh_sync.refresh_installation_repos(installation_id)
             await workspace_auth.set_install_workspace(installation_id, workspace_id)
             settings = await store.get_settings()
             connect = {
@@ -848,6 +869,165 @@ async def github_webhook(request: Request):
     return result
 
 
+@app.post("/integrations/github/refresh-repos")
+async def github_refresh_repos(request: Request):
+    await deps.resolve_write_auth(request)
+    from ..integrations.github import auth as gh_auth
+    from ..integrations.github import sync as gh_sync
+
+    settings = await store.get_settings()
+    installation_id = settings.get("installation_id")
+    if not installation_id:
+        raise HTTPException(status_code=400, detail="GitHub not connected")
+    updated = await gh_sync.refresh_installation_repos(installation_id)
+    connect = {
+        "configured": gh_auth.is_configured(),
+        "install_url": "",
+        "connected": bool(updated.get("installation_id")),
+        "account_login": updated.get("account_login"),
+        "repos": updated.get("repos", []),
+    }
+    await ws_manager.manager.broadcast(
+        "settings.updated", connect, workspace_id=get_workspace_id()
+    )
+    return connect
+
+
+@app.get("/integrations/github/setup-status")
+async def github_setup_status(request: Request):
+    await deps.resolve_dashboard_workspace(request)
+    from ..integrations.github import app_register, auth as gh_auth
+
+    settings = await store.get_settings()
+    webhook_ok = bool(config.GITHUB_WEBHOOK_SECRET) or config.DEV_MODE
+    base = config.PUBLIC_URL.rstrip("/")
+    install_url = ""
+    if config.GITHUB_APP_SLUG:
+        from ..integrations.github import install_state
+
+        wid = get_workspace_id()
+        state = install_state.create_state(wid)
+        install_url = (
+            f"https://github.com/apps/{config.GITHUB_APP_SLUG}/installations/new"
+            f"?state={state}"
+        )
+    return {
+        "app_configured": gh_auth.is_configured(),
+        "registration_allowed": app_register.registration_allowed(),
+        "connected": bool(settings.get("installation_id")),
+        "webhook_configured": webhook_ok,
+        "webhook_url": f"{base}/integrations/github/webhook",
+        "repos_count": len(settings.get("repos") or []),
+        "public_url": config.PUBLIC_URL,
+        "app_slug": config.GITHUB_APP_SLUG or None,
+        "install_url": install_url,
+        "register_status": app_register.read_status(),
+    }
+
+
+@app.post("/integrations/github/register/start")
+async def github_register_start(request: Request):
+    """Start in-product GitHub App manifest registration (local/self-hosted)."""
+    await deps.resolve_write_auth(request)
+    from ..integrations.github import app_register
+
+    if not app_register.registration_allowed():
+        raise HTTPException(
+            status_code=409,
+            detail="GitHub App already configured or registration disabled in hosted mode",
+        )
+    manifest = app_register.build_manifest()
+    url = app_register.register_url(manifest)
+    app_register.STATUS_PATH.parent.mkdir(exist_ok=True)
+    app_register.STATUS_PATH.write_text(
+        json.dumps({"state": "waiting", "register_url": url}, indent=2),
+        encoding="utf-8",
+    )
+    return {"register_url": url, "webhook_will_activate": app_register._webhook_active()}
+
+
+@app.get("/integrations/github/register/callback")
+async def github_register_callback(code: str = "", state: str = ""):
+    """GitHub manifest redirect — exchange code for app credentials."""
+    from ..integrations.github import app_register
+
+    if not code:
+        raise HTTPException(status_code=400, detail="missing manifest code")
+    try:
+        data = await app_register.convert_manifest(code)
+        status = app_register.apply_runtime_credentials(data)
+    except Exception as exc:
+        app_register.STATUS_PATH.parent.mkdir(exist_ok=True)
+        app_register.STATUS_PATH.write_text(
+            json.dumps({"state": "error", "error": str(exc)}), encoding="utf-8"
+        )
+        raise HTTPException(status_code=502, detail=f"manifest conversion failed: {exc}") from exc
+
+    dashboard = _dashboard_origin()
+    return RedirectResponse(url=f"{dashboard}/settings?github=app_registered")
+
+
+# --- Workspace sources / stats / notifications ---------------------------------
+
+@app.get("/workspace/sources")
+async def workspace_sources(request: Request, limit: int = Query(default=50, le=100)):
+    await deps.resolve_dashboard_workspace(request)
+    from ..backend import sources as sources_mod
+
+    return {"sources": await sources_mod.recent_sources(limit)}
+
+
+@app.get("/incidents/stats")
+async def incidents_stats(request: Request):
+    await deps.resolve_dashboard_workspace(request)
+    from ..backend import stats as stats_mod
+
+    return await stats_mod.incident_stats()
+
+
+@app.post("/workspace/notifications/test")
+async def notifications_test(request: Request):
+    await deps.resolve_write_auth(request)
+    from ..notifications import dispatcher
+
+    ok = await dispatcher.send_test()
+    if not ok:
+        raise HTTPException(status_code=400, detail="no notification URLs configured")
+    return {"ok": True}
+
+
+# --- Third-party ingest adapters ----------------------------------------------
+
+@app.post("/ingest/datadog")
+async def ingest_datadog(request: Request):
+    await deps.resolve_ingest_workspace(request)
+    from ..ingest import adapters
+
+    body = await request.json()
+    lines, source = adapters.from_datadog(body)
+    return await _ingest_lines(lines, source)
+
+
+@app.post("/ingest/cloudwatch")
+async def ingest_cloudwatch(request: Request):
+    await deps.resolve_ingest_workspace(request)
+    from ..ingest import adapters
+
+    body = await request.json()
+    lines, source = adapters.from_cloudwatch(body)
+    return await _ingest_lines(lines, source)
+
+
+@app.post("/ingest/otel")
+async def ingest_otel(request: Request):
+    await deps.resolve_ingest_workspace(request)
+    from ..ingest import adapters
+
+    body = await request.json()
+    lines, source = adapters.from_otel(body)
+    return await _ingest_lines(lines, source)
+
+
 # --- Workspace settings -------------------------------------------------------
 
 _SECRET_SETTING_KEYS = {"cursor_api_key"}  # never echoed back
@@ -880,6 +1060,17 @@ async def update_settings(request: Request):
                 status_code=400,
                 detail="hot_reload_webhook_url must be HTTPS and not an internal address",
             )
+
+    for notify_key in ("notification_webhook_url", "notification_slack_url"):
+        notify_url = body.get(notify_key)
+        if notify_url:
+            from ..integrations.github import pr_service
+
+            if not pr_service._safe_callback_url(notify_url):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{notify_key} must be HTTPS and not an internal address",
+                )
 
     # A user can only map/select repos their installation actually granted.
     current = await store.get_settings()

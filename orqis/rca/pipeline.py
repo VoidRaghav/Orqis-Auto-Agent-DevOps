@@ -67,9 +67,17 @@ def _spawn(coro, workspace_id: Optional[str] = None):
     return asyncio.create_task(_wrapped())
 
 
-def _fingerprint(error_message: str) -> str:
-    """Stable key for deduplication — first 200 chars normalised."""
-    key = error_message.strip()[:200].lower()
+def _fingerprint(error_message: str, error_type: Optional[ErrorType] = None) -> str:
+    """Stable key — structural frame + error type + message prefix."""
+    parts: list[str] = []
+    if error_type is not None:
+        parts.append(error_type.value)
+    frames = file_reader.parse_frames(error_message)
+    if frames:
+        path, line = frames[-1]
+        parts.append(f"{path}:{line}")
+    parts.append(error_message.strip()[:200].lower())
+    key = "|".join(parts)
     return hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()
 
 
@@ -181,6 +189,10 @@ async def _finalize_patch(
     )
     await _broadcast("incident.patched", incident)
     await _maybe_open_pr(incident)
+    if incident.status in (IncidentStatus.PATCHED, IncidentStatus.LOW_CONFIDENCE):
+        from ..notifications import dispatcher
+
+        _spawn(dispatcher.notify("incident.patched", incident))
     return incident
 
 
@@ -220,7 +232,7 @@ async def trigger(
     Never raises — failures degrade gracefully to interpretation-only.
     """
     root = project_root or config.PROJECT_ROOT
-    fp = _fingerprint(error_message)
+    fp = _fingerprint(error_message, error_type)
 
     # --- Atomic dedup check-and-create -------------------------------------
     # Hold the lock across the lookup AND the new-incident save so two
@@ -281,7 +293,7 @@ async def trigger_anomaly(signal) -> Optional[Incident]:
 
     signal is an anomaly.AnomalySignal. Never raises.
     """
-    fp = _fingerprint(f"loop:{signal.source}:{signal.tool_name}:{signal.tool_args}")
+    fp = _fingerprint(message, ErrorType.RUNAWAY_LOOP)
     args = f"({signal.tool_args})" if signal.tool_args else "()"
     message = (
         f"Runaway tool loop: {signal.tool_name}{args} called "

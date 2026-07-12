@@ -6,6 +6,8 @@ import uuid
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from tests.tenancy_helpers import (
     clear_workspace_sync,
     get_incident_sync,

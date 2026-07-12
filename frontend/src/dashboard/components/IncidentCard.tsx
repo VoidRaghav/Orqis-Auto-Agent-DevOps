@@ -5,6 +5,7 @@ import type { Incident } from "@/lib/types";
 import { C, ACTIVE_STATUSES, TYPE_COLOR } from "../constants";
 import { mono, inter, primaryBtn, ghostBtn, errorMessage, copyToClipboard } from "../shared";
 import DiffViewer from "./DiffViewer";
+import IncidentTimeline from "./IncidentTimeline";
 import { LiveDot } from "./ui";
 
 export default function IncidentCard({
@@ -187,6 +188,13 @@ export default function IncidentCard({
       </div>
 
       {expanded && (
+        <>
+          <IncidentTimeline incident={incident} />
+          {incident.status === "patch_stale" && (
+            <p style={{ ...mono, fontSize: 11, color: C.amber, marginBottom: 8 }}>
+              Base branch moved — retry PR to rebase the fix onto current HEAD.
+            </p>
+          )}
         <div style={{ borderTop: `1px solid ${C.border}`, padding: "12px 14px" }}>
           {incident.interpretation && (
             <div style={{ ...inter, fontSize: 12, color: C.green, marginBottom: 12 }}>{incident.interpretation}</div>
@@ -381,6 +389,7 @@ export default function IncidentCard({
             </div>
           )}
         </div>
+        </>
       )}
     </div>
   );

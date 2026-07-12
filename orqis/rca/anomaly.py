@@ -78,6 +78,19 @@ def _key(source: str, tool: str, args: str) -> str:
     return f"{wid}\x00{source}\x00{tool}\x00{args}"
 
 
+# Per-source recent call rate — raises threshold for bursty but legitimate sources.
+_source_rates: dict[str, float] = {}
+
+
+def _threshold_for(source: str) -> int:
+    rate = _source_rates.get(source, 0.0)
+    return max(THRESHOLD, int(rate * 0.5) + THRESHOLD)
+
+
+def _note_rate(source: str, count: int) -> None:
+    _source_rates[source] = count / max(WINDOW_SECONDS, 1.0)
+
+
 async def observe(event: TraceEvent) -> Optional[AnomalySignal]:
     """
     Feed one trace event into the detector.
@@ -117,7 +130,9 @@ async def observe(event: TraceEvent) -> Optional[AnomalySignal]:
         while bucket.timestamps and bucket.timestamps[0] < cutoff:
             bucket.timestamps.popleft()
 
-        if len(bucket.timestamps) < THRESHOLD or key in _fired:
+        _note_rate(event.source, len(bucket.timestamps))
+
+        if len(bucket.timestamps) < _threshold_for(event.source) or key in _fired:
             return None
 
         # Crossed the threshold for the first time — escalate exactly once.

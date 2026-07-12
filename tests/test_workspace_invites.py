@@ -5,6 +5,8 @@ from __future__ import annotations
 import uuid
 
 import pytest
+
+pytestmark = pytest.mark.integration
 from fastapi.testclient import TestClient
 
 from orqis import config

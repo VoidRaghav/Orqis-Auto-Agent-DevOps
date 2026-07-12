@@ -1,15 +1,17 @@
 "use client";
 
-import type { Incident, LogEvent } from "@/lib/types";
+import type { Incident } from "@/lib/types";
 import { C, ACTIVE_STATUSES, HEALED_STATUSES } from "../constants";
 import { mono } from "../shared";
 
 export default function KpiStrip({
   events,
   incidents,
+  costRecoveredUsd = 0,
 }: {
-  events: LogEvent[];
+  events: { is_error: boolean; level: string }[];
   incidents: Incident[];
+  costRecoveredUsd?: number;
 }) {
   const errors = events.filter((e) => e.is_error).length;
   const warnings = events.filter((e) => e.level === "WARNING").length;
@@ -21,6 +23,11 @@ export default function KpiStrip({
     { label: "WARN", val: warnings, color: warnings > 0 ? C.amber : C.dim },
     { label: "ACTIVE", val: open, color: open > 0 ? C.amber : C.dim },
     { label: "HEALED", val: healed, color: healed > 0 ? C.green : C.dim },
+    {
+      label: "RECOVERED",
+      val: costRecoveredUsd > 0 ? `$${costRecoveredUsd.toFixed(2)}` : "$0",
+      color: costRecoveredUsd > 0 ? C.green : C.dim,
+    },
   ];
 
   return (

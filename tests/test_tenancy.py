@@ -1,5 +1,9 @@
 """Unit tests for workspace tenancy helpers."""
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 from orqis.backend.tenancy import (
     DEFAULT_WORKSPACE_ID,
     get_workspace_id,

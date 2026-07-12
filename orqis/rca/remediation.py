@@ -125,7 +125,7 @@ class _GuardLoop(cst.CSTTransformer):
         for stmt in updated_node.body.body:
             if (
                 not done
-                and isinstance(stmt, cst.While)
+                and isinstance(stmt, (cst.While, cst.For))
                 and isinstance(stmt.body, cst.IndentedBlock)
             ):
                 new_statements.append(cst.parse_statement(f"{self.counter} = 0\n"))
@@ -142,15 +142,15 @@ class _GuardLoop(cst.CSTTransformer):
             body=updated_node.body.with_changes(body=new_statements)
         )
 
-    def _guard(self, while_node: "cst.While", fallback: str) -> "cst.While":
+    def _guard(self, loop_node: "cst.While | cst.For", fallback: str) -> "cst.While | cst.For":
         guard = cst.parse_statement(
             f"if {self.counter} >= {MAX_ATTEMPTS}:\n    return {fallback}\n"
         )
         increment = cst.parse_statement(f"{self.counter} += 1\n")
-        new_body = while_node.body.with_changes(
-            body=[guard, *while_node.body.body, increment]
+        new_body = loop_node.body.with_changes(
+            body=[guard, *loop_node.body.body, increment]
         )
-        return while_node.with_changes(body=new_body)
+        return loop_node.with_changes(body=new_body)
 
 
 def _unified_diff(file_path: str, original: str, patched: str) -> Optional[str]:

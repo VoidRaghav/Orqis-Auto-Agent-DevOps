@@ -85,9 +85,12 @@ export interface WorkspaceSettings {
   source_repo_map: Record<string, string>;
   default_repo: string;
   default_branch: string;
+  repo_default_branches?: Record<string, string>;
   hot_reload_webhook_url: string;
   auto_merge_enabled: boolean;
   pr_low_confidence: boolean;
+  notification_webhook_url?: string;
+  notification_slack_url?: string;
 }
 
 export interface GithubConnectInfo {
@@ -96,6 +99,19 @@ export interface GithubConnectInfo {
   connected: boolean;
   account_login: string | null;
   repos: string[];
+}
+
+export interface GithubSetupStatus {
+  app_configured: boolean;
+  registration_allowed: boolean;
+  connected: boolean;
+  webhook_configured: boolean;
+  webhook_url: string;
+  repos_count: number;
+  public_url: string;
+  app_slug: string | null;
+  install_url: string;
+  register_status?: { state?: string; slug?: string; error?: string };
 }
 
 export interface IdeSetupInfo {
