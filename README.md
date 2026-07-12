@@ -17,14 +17,6 @@ orqis mcp
 orqis status
 ```
 
-## Deploy
-
-Deploy Orqis on Railway or any public host, then point your log drain to:
-
-```bash
-https://your-orqis-host/drain?source=my-app&token=YOUR_DRAIN_TOKEN
-```
-
 ## Integrate
 
 - Stream logs from a file or process.
