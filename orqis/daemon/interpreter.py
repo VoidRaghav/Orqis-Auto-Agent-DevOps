@@ -193,7 +193,7 @@ async def check_readiness() -> dict:
     if provider == "ollama":
         try:
             async with httpx.AsyncClient(timeout=5.0) as http:
-                r = await http.get(f"{config.OLLAMA_BASE_URL.rstrip('/')}/api/tags")
+                r = await http.get(f"{config.OLLAMA_URL.rstrip('/')}/api/tags")
                 if r.status_code == 200:
                     models = [m.get("name", "") for m in r.json().get("models", [])]
                     want = config.OLLAMA_MODEL

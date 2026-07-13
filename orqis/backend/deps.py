@@ -148,12 +148,16 @@ async def resolve_ws_workspace(request: Request, ticket: str = "") -> str:
 
 def set_session_cookie(response: Response, session_id: str) -> None:
     signed = workspace_auth.sign_session_cookie(session_id)
+    # Dashboard (Vercel) and backend (Render) are different sites, so the session
+    # cookie must be SameSite=None to be sent on cross-site fetches — which the
+    # browser only allows when Secure. Fall back to Lax for same-origin local dev.
+    samesite = "none" if config.SESSION_COOKIE_SECURE else "lax"
     response.set_cookie(
         key=config.SESSION_COOKIE_NAME,
         value=signed,
         httponly=True,
         secure=config.SESSION_COOKIE_SECURE,
-        samesite="lax",
+        samesite=samesite,
         max_age=60 * 60 * 24 * 14,
         path="/",
     )
