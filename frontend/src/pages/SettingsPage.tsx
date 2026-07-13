@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type { GithubConnectInfo, IdeSetupInfo, WorkspaceSettings } from "@/lib/types";
 import DashboardNav from "@/dashboard/components/DashboardNav";
 import OpsAmbientLayer from "@/dashboard/components/OpsAmbientLayer";
@@ -45,6 +46,7 @@ export default function SettingsPage() {
   const [mcpCopied, setMcpCopied] = useState(false);
   const [status, setStatus] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  const navigate = useNavigate();
   const [backendOk, setBackendOk] = useState(false);
   const [apiKeys, setApiKeys] = useState<ApiKeySummary[]>([]);
   const [newKey, setNewKey] = useState<string | null>(null);
@@ -136,8 +138,10 @@ export default function SettingsPage() {
       if (!r.ok) {
         setStatus({ kind: "err", msg: await r.text() });
       } else {
-        setStatus({ kind: "ok", msg: "Saved." });
+        setStatus({ kind: "ok", msg: "Saved — opening dashboard…" });
         await load();
+        // Brief pause so the confirmation is visible, then go to the dashboard.
+        setTimeout(() => navigate("/dashboard"), 700);
       }
     } catch (e) {
       setStatus({ kind: "err", msg: String(e) });
