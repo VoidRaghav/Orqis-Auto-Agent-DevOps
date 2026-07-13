@@ -84,8 +84,11 @@ export default function SettingsGithubWizard({ github, fetchOpts, onReload, onEr
     <Card title="GitHub setup" accent={settingsColors.github} wide>
       <nav className="settings-wizard-steps" aria-label="GitHub setup progress">
         {STEPS.map((step, i) => {
-          const done = i < current;
-          const active = i === current;
+          // Steps before the current one are done; the final "Ready" step also
+          // shows done once the integration is actually ready (it is never
+          // "before current", so it would otherwise never get a check).
+          const done = i < current || (i === current && ready);
+          const active = i === current && !ready;
           return (
             <div
               key={step.id}
