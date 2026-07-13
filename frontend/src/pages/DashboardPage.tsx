@@ -147,7 +147,12 @@ export default function Dashboard() {
                   <EmptyState
                     hero
                     label="No open incidents yet."
-                    hint="Connect GitHub for auto-fix PRs →"
+                    githubConnected={!!github?.connected}
+                    hint={
+                      github?.connected
+                        ? "Add orqis.init() to your agent to start →"
+                        : "Connect GitHub for auto-fix PRs →"
+                    }
                   />
                 ) : (
                   incidents.map((i, idx) => (

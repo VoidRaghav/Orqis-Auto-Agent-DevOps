@@ -64,10 +64,12 @@ export function EmptyState({
   label,
   hint,
   hero,
+  githubConnected,
 }: {
   label: string;
   hint?: string;
   hero?: boolean;
+  githubConnected?: boolean;
 }) {
   if (hero) {
     return (
@@ -81,9 +83,9 @@ export function EmptyState({
             <span className="dashboard-onboard-step-n">1</span>
             <span>Instrument your app</span>
           </div>
-          <div className="dashboard-onboard-step">
-            <span className="dashboard-onboard-step-n">2</span>
-            <span>Connect GitHub</span>
+          <div className={`dashboard-onboard-step${githubConnected ? " is-done" : ""}`}>
+            <span className="dashboard-onboard-step-n">{githubConnected ? "✓" : "2"}</span>
+            <span>{githubConnected ? "GitHub connected" : "Connect GitHub"}</span>
           </div>
           <div className="dashboard-onboard-step">
             <span className="dashboard-onboard-step-n">3</span>
