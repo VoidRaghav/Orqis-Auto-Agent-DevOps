@@ -28,22 +28,17 @@ def patch() -> None:
     if _patched:
         return
     try:
-        import anthropic
+        from anthropic.resources.messages import Messages, AsyncMessages
     except ImportError:
         return
 
-    # Sync client
-    _orig_sync_create = anthropic.Anthropic.messages.create.__func__ \
-        if hasattr(anthropic.Anthropic.messages.create, "__func__") \
-        else None
-    anthropic.Anthropic.messages.create = _make_sync_wrapper(
-        anthropic.Anthropic.messages.create
-    )
-
-    # Async client
-    anthropic.AsyncAnthropic.messages.create = _make_async_wrapper(
-        anthropic.AsyncAnthropic.messages.create
-    )
+    # Patch the resource classes directly. On the client class `messages` is a
+    # cached_property, so Anthropic.messages.create does not exist until an
+    # instance is built — patching the class method covers all instances.
+    _orig_sync_create = Messages.create
+    _orig_async_create = AsyncMessages.create
+    Messages.create = _make_sync_wrapper(_orig_sync_create)
+    AsyncMessages.create = _make_async_wrapper(_orig_async_create)
 
     _patched = True
 
@@ -53,9 +48,11 @@ def unpatch() -> None:
     if not _patched:
         return
     try:
-        import anthropic
+        from anthropic.resources.messages import Messages, AsyncMessages
         if _orig_sync_create:
-            anthropic.Anthropic.messages.create = _orig_sync_create
+            Messages.create = _orig_sync_create
+        if _orig_async_create:
+            AsyncMessages.create = _orig_async_create
     except ImportError:
         pass
     _patched = False

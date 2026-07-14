@@ -47,24 +47,40 @@ def init(
     if _initialized:
         return
 
+    from .. import config
+
     # Allow env var as fallback for api_key (standard 12-factor pattern)
     resolved_key = api_key or os.getenv("ORQIS_API_KEY", "")
     if resolved_key:
-        from .. import config
         config.INGEST_API_KEY = resolved_key
-
-    # Override config values if provided
     if backend_url:
-        from .. import config
         config.BACKEND_URL = backend_url
 
-    # Install SDK patches — each is silently skipped if the lib isn't installed
-    _patch_openai()
-    _patch_anthropic()
+    # Install SDK patches — each is skipped if that library is not installed.
+    patched = []
+    if _patch_openai():
+        patched.append("openai")
+    if _patch_anthropic():
+        patched.append("anthropic")
     callback = _register_langchain()
+    if callback is not None and _langchain_available():
+        patched.append("langchain")
 
     _initialized = True
-    logger.debug("orqis: instrumentation active (source=%s)", source)
+
+    # One concise line so users can see what was detected and where events go.
+    logger.info(
+        "orqis active: capturing [%s], backend=%s, api_key=%s (source=%s)",
+        ", ".join(patched) if patched else "none detected",
+        config.BACKEND_URL,
+        "set" if config.INGEST_API_KEY else "MISSING",
+        source,
+    )
+    if not patched:
+        logger.warning(
+            "orqis: no supported LLM library detected (openai / anthropic / "
+            "langchain) at init() time"
+        )
 
 
 def shutdown() -> None:
@@ -78,22 +94,33 @@ def shutdown() -> None:
     _initialized = False
 
 
-def _patch_openai() -> None:
+def _langchain_available() -> bool:
+    import importlib.util
+
+    return (
+        importlib.util.find_spec("langchain_core") is not None
+        or importlib.util.find_spec("langchain") is not None
+    )
+
+
+def _patch_openai() -> bool:
     try:
-        from ..instrumentation.openai_patch import patch
-        patch()
-        logger.debug("orqis: OpenAI SDK patched")
+        from ..instrumentation import openai_patch
+        openai_patch.patch()
+        return openai_patch._patched
     except Exception as e:
         logger.debug("orqis: OpenAI patch skipped (%s)", e)
+        return False
 
 
-def _patch_anthropic() -> None:
+def _patch_anthropic() -> bool:
     try:
-        from ..instrumentation.anthropic_patch import patch
-        patch()
-        logger.debug("orqis: Anthropic SDK patched")
+        from ..instrumentation import anthropic_patch
+        anthropic_patch.patch()
+        return anthropic_patch._patched
     except Exception as e:
         logger.debug("orqis: Anthropic patch skipped (%s)", e)
+        return False
 
 
 def _register_langchain() -> Optional[OrqisCallbackHandler]:

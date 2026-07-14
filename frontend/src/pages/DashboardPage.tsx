@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import type { LogEvent, TraceEvent } from "@/lib/types";
 import { useOrqisStream } from "@/lib/useOrqisStream";
 import { API_URL, WS_URL } from "@/lib/env";
 import { C, ACTIVE_STATUSES } from "@/dashboard/constants";
@@ -134,12 +135,28 @@ export default function Dashboard() {
           </div>
 
           <div ref={logRef} className="dashboard-main-scroll">
-            {activeTab === "logs" &&
-              (events.length === 0 ? (
+            {activeTab === "logs" && (() => {
+              // Activity is the unified firehose: raw log lines and LLM calls,
+              // newest first. AI calls stays LLM-only for a focused view.
+              type FeedRow =
+                | { key: string; ts: string; kind: "log"; log: LogEvent }
+                | { key: string; ts: string; kind: "trace"; trace: TraceEvent };
+              const feed: FeedRow[] = [
+                ...events.map((e): FeedRow => ({ key: `l-${e.id}`, ts: e.timestamp, kind: "log", log: e })),
+                ...traces.map((t): FeedRow => ({ key: `t-${t.id}`, ts: t.timestamp, kind: "trace", trace: t })),
+              ].sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+              return feed.length === 0 ? (
                 <EmptyState label="No activity yet." hint="Add orqis.init() →" />
               ) : (
-                events.map((e) => <LogRow key={e.id} event={e} flash={flashSet.current.has(e.id)} />)
-              ))}
+                feed.map((row) =>
+                  row.kind === "log" ? (
+                    <LogRow key={row.key} event={row.log} flash={flashSet.current.has(row.log.id)} />
+                  ) : (
+                    <TraceRow key={row.key} trace={row.trace} />
+                  ),
+                )
+              );
+            })()}
 
             {activeTab === "incidents" && (
               <div className="dashboard-incidents">

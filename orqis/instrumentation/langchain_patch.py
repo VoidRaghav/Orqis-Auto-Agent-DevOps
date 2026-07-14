@@ -9,7 +9,6 @@ Supports LangChain >= 0.1 (callback handler API is stable across versions).
 """
 
 import time
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import UUID

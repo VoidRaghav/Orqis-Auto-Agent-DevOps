@@ -12,7 +12,7 @@ Thread model: one daemon thread per process, started on first emit().
 The thread is a daemon so it dies automatically when the main process exits.
 """
 
-import json
+import atexit
 import logging
 import queue
 import threading
@@ -28,8 +28,8 @@ _queue: queue.Queue = queue.Queue(maxsize=2000)
 _thread: Optional[threading.Thread] = None
 _lock = threading.Lock()
 _shutdown = threading.Event()
+_atexit_registered = False
 
-MAX_RETRIES = 2
 TIMEOUT = 3.0  # seconds — keep it short, never block the user's code
 
 
@@ -57,7 +57,7 @@ def shutdown(timeout: float = 5.0) -> None:
 
 
 def _ensure_started() -> None:
-    global _thread
+    global _thread, _atexit_registered
     if _thread is not None and _thread.is_alive():
         return
     with _lock:
@@ -65,6 +65,11 @@ def _ensure_started() -> None:
             return
         _thread = threading.Thread(target=_worker, name="orqis-emitter", daemon=True)
         _thread.start()
+        if not _atexit_registered:
+            # Short-lived scripts exit before the daemon thread can POST queued
+            # events. Flush on interpreter exit so a one-shot run still delivers.
+            atexit.register(shutdown)
+            _atexit_registered = True
 
 
 def _worker() -> None:
@@ -79,26 +84,45 @@ def _worker() -> None:
             except queue.Empty:
                 continue
 
-            _post_with_retry(client, payload)
+            _post(client, payload)
             _queue.task_done()
 
 
-def _post_with_retry(client: httpx.Client, payload: dict) -> None:
+_warned = False
+
+
+def _warn_once(msg: str) -> None:
+    """Surface the first delivery problem at WARNING, then stay quiet so a
+    persistent issue never floods the user's logs."""
+    global _warned
+    if _warned:
+        return
+    _warned = True
+    logger.warning("orqis: %s (further delivery errors are silenced)", msg)
+
+
+def _post(client: httpx.Client, payload: dict) -> None:
     url = f"{config.BACKEND_URL}/trace"
     headers = {}
     if config.INGEST_API_KEY:
         headers["Authorization"] = f"Bearer {config.INGEST_API_KEY}"
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            client.post(url, json=payload, headers=headers)
-            return
-        except httpx.ConnectError:
-            # Backend not running — don't retry connection errors, just drop
-            return
-        except httpx.TimeoutException:
-            if attempt == MAX_RETRIES:
-                logger.debug("orqis: trace POST timed out after %d retries", MAX_RETRIES)
-            return
-        except Exception as e:
-            logger.debug("orqis: trace POST failed: %s", e)
-            return
+    try:
+        resp = client.post(url, json=payload, headers=headers)
+    except httpx.ConnectError:
+        _warn_once(f"cannot reach backend at {config.BACKEND_URL} - is it running?")
+        return
+    except httpx.TimeoutException:
+        _warn_once(f"trace POST to {config.BACKEND_URL} timed out")
+        return
+    except Exception as e:
+        _warn_once(f"trace POST failed: {e}")
+        return
+    if resp.status_code >= 400:
+        detail = resp.text[:200].replace("\n", " ")
+        if resp.status_code in (401, 403):
+            _warn_once(
+                f"backend rejected trace (HTTP {resp.status_code}) - "
+                f"check your ORQIS_API_KEY: {detail}"
+            )
+        else:
+            _warn_once(f"backend returned HTTP {resp.status_code}: {detail}")

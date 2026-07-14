@@ -1,15 +1,15 @@
 """
 OpenAI SDK instrumentation.
 
-Monkey-patches openai.chat.completions.create (sync) and its async variant
-so every call is captured without any code change in the user's agent.
+Monkey-patches the Completions.create / AsyncCompletions.create resource
+methods at the class level, so every OpenAI client instance is captured
+without any code change in the user's agent.
 
 Patch is idempotent — calling patch() twice has no effect.
 Calling unpatch() restores the original methods exactly.
 """
 
 import time
-import traceback
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -27,16 +27,17 @@ def patch() -> None:
     if _patched:
         return
     try:
-        import openai
+        from openai.resources.chat.completions import Completions, AsyncCompletions
     except ImportError:
-        return  # openai not installed — skip silently
+        return  # openai not installed (or unexpected layout) — skip silently
 
-    _orig_sync = openai.chat.completions.create
-    _orig_async = openai.AsyncClient  # placeholder; patched on instance below
-    openai.chat.completions.create = _wrap_sync(openai.chat.completions.create)
-
-    # Patch async path: AsyncOpenAI().chat.completions.create
-    _patch_async_client(openai)
+    # Patch at the class level so every client instance is covered. Modern
+    # openai (>=1.0) is used as OpenAI().chat.completions.create(...), which
+    # resolves to Completions.create — patching the module singleton misses it.
+    _orig_sync = Completions.create
+    _orig_async = AsyncCompletions.create
+    Completions.create = _wrap_sync(_orig_sync)
+    AsyncCompletions.create = _wrap_async(_orig_async)
 
     _patched = True
 
@@ -46,9 +47,11 @@ def unpatch() -> None:
     if not _patched:
         return
     try:
-        import openai
+        from openai.resources.chat.completions import Completions, AsyncCompletions
         if _orig_sync:
-            openai.chat.completions.create = _orig_sync
+            Completions.create = _orig_sync
+        if _orig_async:
+            AsyncCompletions.create = _orig_async
     except ImportError:
         pass
     _patched = False
@@ -57,20 +60,21 @@ def unpatch() -> None:
 # --- Sync wrapper ------------------------------------------------------------
 
 def _wrap_sync(original):
-    def wrapper(*args, **kwargs):
+    def wrapper(self, *args, **kwargs):
         run_id = str(uuid.uuid4())
         model = kwargs.get("model", "unknown")
+        provider = _detect_provider(self)
         start = time.perf_counter()
 
-        _emit_start(run_id, model)
+        _emit_start(run_id, model, provider)
 
         try:
-            response = original(*args, **kwargs)
+            response = original(self, *args, **kwargs)
         except Exception as exc:
-            _emit_error(run_id, model, exc, time.perf_counter() - start)
+            _emit_error(run_id, model, provider, exc, time.perf_counter() - start)
             raise  # always re-raise — never swallow the user's exception
 
-        _emit_end(run_id, model, response, time.perf_counter() - start)
+        _emit_end(run_id, model, provider, response, time.perf_counter() - start)
         return response
 
     wrapper.__wrapped__ = original
@@ -79,58 +83,82 @@ def _wrap_sync(original):
 
 # --- Async wrapper -----------------------------------------------------------
 
-def _patch_async_client(openai_module) -> None:
-    """
-    Wrap AsyncOpenAI.chat.completions.create.
-    We patch at the class level so all instances are covered.
-    """
-    try:
-        orig = openai_module.AsyncOpenAI
-        original_init = orig.__init__
-
-        def patched_init(self, *args, **kwargs):
-            original_init(self, *args, **kwargs)
-            original_create = self.chat.completions.create
-            if not getattr(original_create, "__wrapped__", False):
-                self.chat.completions.create = _wrap_async(original_create)
-
-        orig.__init__ = patched_init
-    except Exception:
-        pass  # async client not available in this version
-
-
 def _wrap_async(original):
-    async def wrapper(*args, **kwargs):
+    async def wrapper(self, *args, **kwargs):
         run_id = str(uuid.uuid4())
         model = kwargs.get("model", "unknown")
+        provider = _detect_provider(self)
         start = time.perf_counter()
 
-        _emit_start(run_id, model)
+        _emit_start(run_id, model, provider)
 
         try:
-            response = await original(*args, **kwargs)
+            response = await original(self, *args, **kwargs)
         except Exception as exc:
-            _emit_error(run_id, model, exc, time.perf_counter() - start)
+            _emit_error(run_id, model, provider, exc, time.perf_counter() - start)
             raise
 
-        _emit_end(run_id, model, response, time.perf_counter() - start)
+        _emit_end(run_id, model, provider, response, time.perf_counter() - start)
         return response
 
-    wrapper.__wrapped__ = True
+    wrapper.__wrapped__ = original
     return wrapper
+
+
+# --- Provider detection ------------------------------------------------------
+
+# Base-URL fragments mapped to a friendly provider name. The openai package is a
+# universal client for OpenAI-compatible backends, so the real provider is
+# whatever the client's base_url points at — not always "openai".
+_PROVIDER_HOSTS = (
+    ("api.openai.com", "openai"),
+    ("11434", "ollama"),
+    ("ollama", "ollama"),
+    ("groq.com", "groq"),
+    ("generativelanguage.googleapis.com", "gemini"),
+    ("openrouter.ai", "openrouter"),
+    ("api.anthropic.com", "anthropic"),
+    ("api.mistral.ai", "mistral"),
+    ("api.together.xyz", "together"),
+    ("api.deepseek.com", "deepseek"),
+    ("api.perplexity.ai", "perplexity"),
+    ("openai.azure.com", "azure"),
+)
+
+
+def _detect_provider(resource) -> str:
+    """Derive the real provider from the client's base_url."""
+    try:
+        base = str(getattr(resource._client, "base_url", "") or "").lower()
+    except Exception:
+        base = ""
+    if not base:
+        return "openai"
+    for fragment, name in _PROVIDER_HOSTS:
+        if fragment in base:
+            return name
+    # Unknown OpenAI-compatible endpoint: surface the host rather than mislabel.
+    try:
+        from urllib.parse import urlparse
+
+        host = urlparse(base).netloc.split(":")[0]
+        return host or "openai-compatible"
+    except Exception:
+        return "openai-compatible"
 
 
 # --- Event helpers -----------------------------------------------------------
 
-def _emit_start(run_id: str, model: str) -> None:
+def _emit_start(run_id: str, model: str, provider: str) -> None:
     emitter.emit(_build(
         kind=EventKind.LLM_START,
         run_id=run_id,
         model=model,
+        provider=provider,
     ))
 
 
-def _emit_end(run_id: str, model: str, response, elapsed: float) -> None:
+def _emit_end(run_id: str, model: str, provider: str, response, elapsed: float) -> None:
     usage = getattr(response, "usage", None)
     input_tokens = getattr(usage, "prompt_tokens", None)
     output_tokens = getattr(usage, "completion_tokens", None)
@@ -142,6 +170,7 @@ def _emit_end(run_id: str, model: str, response, elapsed: float) -> None:
         kind=EventKind.LLM_END,
         run_id=run_id,
         model=model,
+        provider=provider,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cost_usd=cost,
@@ -149,12 +178,13 @@ def _emit_end(run_id: str, model: str, response, elapsed: float) -> None:
     ))
 
 
-def _emit_error(run_id: str, model: str, exc: Exception, elapsed: float) -> None:
+def _emit_error(run_id: str, model: str, provider: str, exc: Exception, elapsed: float) -> None:
     error_type = _classify_openai_error(exc)
     emitter.emit(_build(
         kind=EventKind.LLM_ERROR,
         run_id=run_id,
         model=model,
+        provider=provider,
         latency_ms=int(elapsed * 1000),
         is_error=True,
         error_type=error_type,
@@ -182,6 +212,7 @@ def _build(
     kind: EventKind,
     run_id: str,
     model: str,
+    provider: str = "openai",
     input_tokens: Optional[int] = None,
     output_tokens: Optional[int] = None,
     cost_usd: Optional[float] = None,
@@ -193,7 +224,7 @@ def _build(
     return {
         "kind": kind.value,
         "run_id": run_id,
-        "provider": "openai",
+        "provider": provider,
         "model": model,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "input_tokens": input_tokens,

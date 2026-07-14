@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orqis-agent-sdk"
+version = "0.1.2"
+description = "Orqis SDK - one line to stream AI agent traces to Orqis self-healing ops"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Orqis" }]
+keywords = ["llmops", "observability", "ai-agents", "langchain", "openai", "anthropic", "monitoring"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "httpx>=0.28.0",
+    "pydantic>=2.10.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://orqis-auto-agent-dev-ops.vercel.app"
+
+[tool.setuptools]
+# Only these three packages ship. The staging tree contains nothing else,
+# but the explicit list is a second guard against private modules leaking.
+packages = ["orqis", "orqis.instrumentation", "orqis.backend"]
