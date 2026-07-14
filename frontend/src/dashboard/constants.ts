@@ -23,10 +23,20 @@ export const C = {
 
 export const LEVEL_COLOR: Record<string, string> = {
   DEBUG: C.dim,
-  INFO: C.muted,
+  INFO: C.blue,
   WARNING: C.amber,
   ERROR: C.red,
   CRITICAL: C.red,
+};
+
+// Message-text tint per level, so a line reads as info / warning / error at a
+// glance without reading the badge. Kept light for readability on the dark bg.
+export const LEVEL_TEXT: Record<string, string> = {
+  DEBUG: "#8a938e",
+  INFO: "#d3dbd6",
+  WARNING: "#f0cd7a",
+  ERROR: "#f5a3a3",
+  CRITICAL: "#ff8f8f",
 };
 
 export const TYPE_COLOR: Record<string, string> = {

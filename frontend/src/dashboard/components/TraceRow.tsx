@@ -35,13 +35,21 @@ export default function TraceRow({ trace }: { trace: TraceEvent }) {
       >
         {trace.kind}
       </span>
-      <span style={{ ...mono, fontSize: 10, color: C.dim, flexShrink: 0 }}>{trace.provider}</span>
-      {trace.model && <span style={{ ...mono, fontSize: 10, color: "#555", flexShrink: 0 }}>{trace.model}</span>}
+      <span style={{ ...mono, fontSize: 10, fontWeight: 600, color: C.muted, flexShrink: 0 }}>
+        {trace.provider}
+      </span>
+      {trace.model && (
+        <span style={{ ...mono, fontSize: 11, fontWeight: 700, color: C.ivory, flexShrink: 0 }}>
+          {trace.model}
+        </span>
+      )}
       {trace.tool_name && (
-        <span style={{ ...mono, fontSize: 10, color: C.blue, flexShrink: 0 }}>{trace.tool_name}()</span>
+        <span style={{ ...mono, fontSize: 11, fontWeight: 700, color: C.blue, flexShrink: 0 }}>
+          {trace.tool_name}()
+        </span>
       )}
       {(trace.input_tokens != null || trace.output_tokens != null) && (
-        <span style={{ ...mono, fontSize: 10, color: "#555", flexShrink: 0 }}>
+        <span style={{ ...mono, fontSize: 11, fontWeight: 600, color: "#c2ccc7", flexShrink: 0 }}>
           {trace.input_tokens ?? 0}→{trace.output_tokens ?? 0} tok
         </span>
       )}
@@ -59,7 +67,9 @@ export default function TraceRow({ trace }: { trace: TraceEvent }) {
         </span>
       )}
       {trace.latency_ms != null && (
-        <span style={{ ...mono, fontSize: 10, color: C.dim, flexShrink: 0 }}>{trace.latency_ms}ms</span>
+        <span style={{ ...mono, fontSize: 11, fontWeight: 600, color: "#c2ccc7", flexShrink: 0 }}>
+          {trace.latency_ms}ms
+        </span>
       )}
     </div>
   );
