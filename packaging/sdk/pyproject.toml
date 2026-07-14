@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orqis-agent-sdk"
-version = "0.1.2"
+version = "0.1.3"
 description = "Orqis SDK - one line to stream AI agent traces to Orqis self-healing ops"
 readme = "README.md"
 requires-python = ">=3.9"

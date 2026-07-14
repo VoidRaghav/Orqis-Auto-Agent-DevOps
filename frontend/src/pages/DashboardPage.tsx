@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import type { LogEvent, TraceEvent } from "@/lib/types";
 import { useOrqisStream } from "@/lib/useOrqisStream";
 import { API_URL, WS_URL } from "@/lib/env";
 import { C, ACTIVE_STATUSES } from "@/dashboard/constants";
@@ -17,40 +16,6 @@ import RightRail from "@/dashboard/components/RightRail";
 import OpsAmbientLayer from "@/dashboard/components/OpsAmbientLayer";
 import { resolveOpsMood } from "@/dashboard/components/ops-ambient";
 import { EmptyState } from "@/dashboard/components/ui";
-
-const ERROR_STATUS: Record<string, string> = {
-  RATE_LIMIT: "429 Too Many Requests",
-  TIMEOUT: "408 Timeout",
-  AUTHENTICATION: "401 Unauthorized",
-  CONNECTION: "503 Unavailable",
-  HTTP_ERROR: "400 Bad Request",
-};
-
-// Render a completed LLM trace as an HTTP access-log line for the Activity feed.
-// Activity is the request log (what calls happened); AI calls is the semantic view.
-function traceToLogLine(t: TraceEvent): LogEvent {
-  const endpoint = t.provider === "anthropic" ? "/v1/messages" : "/v1/chat/completions";
-  const status = t.is_error ? (ERROR_STATUS[t.error_type ?? ""] ?? "ERROR") : "200 OK";
-  const meta = [
-    t.model,
-    t.latency_ms != null ? `${t.latency_ms}ms` : null,
-    t.input_tokens != null || t.output_tokens != null
-      ? `${t.input_tokens ?? 0}→${t.output_tokens ?? 0} tok`
-      : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  return {
-    id: `act-${t.id}`,
-    timestamp: t.timestamp,
-    raw_line: `POST ${t.provider} "${endpoint}" ${status}${meta ? "  " + meta : ""}`,
-    level: t.is_error ? "ERROR" : "INFO",
-    is_error: t.is_error,
-    error_type: t.error_type,
-    source: t.source,
-    interpretation: t.interpretation,
-  };
-}
 
 export default function Dashboard() {
   const {
@@ -169,20 +134,12 @@ export default function Dashboard() {
           </div>
 
           <div ref={logRef} className="dashboard-main-scroll">
-            {activeTab === "logs" && (() => {
-              // Activity is the request/access log: one line per HTTP call the
-              // agent makes (derived from completed traces, not llm.start), plus
-              // any real log lines — newest first. AI calls stays the model view.
-              const feed: LogEvent[] = [
-                ...events,
-                ...traces.filter((t) => !t.kind.includes("start")).map(traceToLogLine),
-              ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-              return feed.length === 0 ? (
+            {activeTab === "logs" &&
+              (events.length === 0 ? (
                 <EmptyState label="No activity yet." hint="Add orqis.init() →" />
               ) : (
-                feed.map((e) => <LogRow key={e.id} event={e} flash={flashSet.current.has(e.id)} />)
-              );
-            })()}
+                events.map((e) => <LogRow key={e.id} event={e} flash={flashSet.current.has(e.id)} />)
+              ))}
 
             {activeTab === "incidents" && (
               <div className="dashboard-incidents">

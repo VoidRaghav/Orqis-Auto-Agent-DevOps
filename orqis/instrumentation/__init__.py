@@ -33,14 +33,17 @@ def init(
     api_key: Optional[str] = None,
     backend_url: Optional[str] = None,
     source: str = "sdk",
+    capture_logs: bool = True,
 ) -> None:
     """
     Initialize Orqis instrumentation.
 
     Args:
-        api_key:     Orqis project API key (or set ORQIS_API_KEY env var).
-        backend_url: Override the backend URL (default: http://localhost:8000).
-        source:      Label shown on the dashboard for all events from this process.
+        api_key:      Orqis project API key (or set ORQIS_API_KEY env var).
+        backend_url:  Override the backend URL (default: http://localhost:8000).
+        source:       Label shown on the dashboard for all events from this process.
+        capture_logs: Stream the app's own log lines to the Activity feed
+                      (INFO and above). Set False to send LLM traces only.
     """
     global _initialized, callback
 
@@ -66,12 +69,17 @@ def init(
     if callback is not None and _langchain_available():
         patched.append("langchain")
 
+    if capture_logs:
+        from ..instrumentation import logs
+        logs.install(source=source)
+
     _initialized = True
 
     # One concise line so users can see what was detected and where events go.
     logger.info(
-        "orqis active: capturing [%s], backend=%s, api_key=%s (source=%s)",
+        "orqis active: capturing [%s], logs=%s, backend=%s, api_key=%s (source=%s)",
         ", ".join(patched) if patched else "none detected",
+        "on" if capture_logs else "off",
         config.BACKEND_URL,
         "set" if config.INGEST_API_KEY else "MISSING",
         source,
@@ -90,6 +98,8 @@ def shutdown() -> None:
     Calling multiple times is safe.
     """
     global _initialized
+    from ..instrumentation import logs
+    logs.uninstall()
     emitter.shutdown()
     _initialized = False
 

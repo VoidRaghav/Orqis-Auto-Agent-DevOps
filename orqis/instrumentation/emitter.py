@@ -46,6 +46,18 @@ def emit(payload: dict) -> None:
         logger.debug("orqis: event queue full, dropping event")
 
 
+def emit_log(line: str, source: str = "sdk") -> None:
+    """
+    Enqueue a raw log line for delivery to the backend log feed (/ingest).
+    Same non-blocking, drop-on-full contract as emit().
+    """
+    _ensure_started()
+    try:
+        _queue.put_nowait({"_orqis_log": line, "_source": source})
+    except queue.Full:
+        logger.debug("orqis: event queue full, dropping log line")
+
+
 def shutdown(timeout: float = 5.0) -> None:
     """
     Flush remaining events and stop the background thread.
@@ -102,26 +114,34 @@ def _warn_once(msg: str) -> None:
 
 
 def _post(client: httpx.Client, payload: dict) -> None:
-    url = f"{config.BACKEND_URL}/trace"
+    # Log lines go to /ingest as raw lines; trace events go to /trace.
+    if "_orqis_log" in payload:
+        url = f"{config.BACKEND_URL}/ingest"
+        body: dict = {"lines": [payload["_orqis_log"]], "source": payload.get("_source", "sdk")}
+        label = "log"
+    else:
+        url = f"{config.BACKEND_URL}/trace"
+        body = payload
+        label = "trace"
     headers = {}
     if config.INGEST_API_KEY:
         headers["Authorization"] = f"Bearer {config.INGEST_API_KEY}"
     try:
-        resp = client.post(url, json=payload, headers=headers)
+        resp = client.post(url, json=body, headers=headers)
     except httpx.ConnectError:
         _warn_once(f"cannot reach backend at {config.BACKEND_URL} - is it running?")
         return
     except httpx.TimeoutException:
-        _warn_once(f"trace POST to {config.BACKEND_URL} timed out")
+        _warn_once(f"{label} POST to {config.BACKEND_URL} timed out")
         return
     except Exception as e:
-        _warn_once(f"trace POST failed: {e}")
+        _warn_once(f"{label} POST failed: {e}")
         return
     if resp.status_code >= 400:
         detail = resp.text[:200].replace("\n", " ")
         if resp.status_code in (401, 403):
             _warn_once(
-                f"backend rejected trace (HTTP {resp.status_code}) - "
+                f"backend rejected {label} (HTTP {resp.status_code}) - "
                 f"check your ORQIS_API_KEY: {detail}"
             )
         else:
