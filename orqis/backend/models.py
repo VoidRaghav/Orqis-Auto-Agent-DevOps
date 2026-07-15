@@ -184,6 +184,7 @@ class IncidentStatus(str, Enum):
     PATCHING        = "patching"         # LLM patch generation in flight
     PATCHED         = "patched"          # diff validated, awaiting approval
     LOW_CONFIDENCE  = "low_confidence"   # diff generated but failed verification
+    NEEDS_ACTION    = "needs_action"     # operational/config error — human must fix, not code
     APPROVED        = "approved"         # patch applied to disk (local dev path)
     DISMISSED       = "dismissed"        # human dismissed — no action taken
     # --- GitHub PR-first lifecycle ---

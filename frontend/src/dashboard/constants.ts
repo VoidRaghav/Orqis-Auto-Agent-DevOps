@@ -64,6 +64,7 @@ export const ACTIVE_STATUSES = new Set<string>([
   "patching",
   "patched",
   "low_confidence",
+  "needs_action",
   "pr_open",
   "pr_failed",
   "patch_stale",

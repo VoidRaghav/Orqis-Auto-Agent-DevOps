@@ -261,6 +261,25 @@ async def _maybe_open_pr(incident: Optional[Incident]) -> None:
             _spawn(pr_service.open_fix_pr(incident))
 
 
+# Operational failures the human must fix in their environment — not code bugs.
+# Orqis flags these for action and never generates a patch for them.
+OPERATIONAL_TYPES = {ErrorType.AUTHENTICATION, ErrorType.PERMISSION_ERROR}
+
+OPERATIONAL_GUIDANCE = {
+    ErrorType.AUTHENTICATION: (
+        "Credentials were rejected. This is a configuration issue, not a code bug — "
+        "set valid credentials (API key, token, or username/password such as "
+        "SMTP_USER / SMTP_PASSWORD) in your environment. Orqis does not auto-patch "
+        "credential errors."
+    ),
+    ErrorType.PERMISSION_ERROR: (
+        "The operation was denied by permissions. Grant the required access (scopes, "
+        "IAM role, or file/API permissions) in your environment — this is a config "
+        "fix, not a code change."
+    ),
+}
+
+
 async def trigger(
     source_event_id: str,
     error_message: str,
@@ -302,6 +321,18 @@ async def trigger(
         await store.dedup_set(fp, incident.id, DEDUP_WINDOW_SECONDS)
 
     await _broadcast("incident.created", incident)
+
+    # Operational errors (bad credentials, missing permissions) are configuration
+    # problems, not code bugs — there is no correct patch. Flag for the human and
+    # stop before locating or patching anything.
+    if error_type in OPERATIONAL_TYPES:
+        incident = await store.update_incident(
+            incident.id,
+            status=IncidentStatus.NEEDS_ACTION,
+            interpretation=OPERATIONAL_GUIDANCE.get(error_type, fallback(error_type)),
+        )
+        await _broadcast("incident.updated", incident)
+        return incident
 
     # LLM interpretation runs async — replaces fallback when ready
     _spawn(_update_interpretation(incident.id, error_message, error_type))

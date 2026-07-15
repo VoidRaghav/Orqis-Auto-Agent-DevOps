@@ -39,6 +39,7 @@ export default function IncidentCard({
       patching: C.blue,
       patched: C.green,
       low_confidence: C.amber,
+      needs_action: C.amber,
       approved: C.green,
       dismissed: C.dim,
       pr_open: C.blue,
@@ -128,7 +129,7 @@ export default function IncidentCard({
             flexShrink: 0,
           }}
         >
-          {incident.status.toUpperCase()}
+          {incident.status.replace(/_/g, " ").toUpperCase()}
         </span>
 
         {incident.hit_count > 1 && (

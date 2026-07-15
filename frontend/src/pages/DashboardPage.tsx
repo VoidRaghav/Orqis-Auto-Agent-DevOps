@@ -79,6 +79,7 @@ export default function Dashboard() {
       i.status === "pr_open" ||
       i.status === "pr_failed" ||
       i.status === "patch_stale" ||
+      i.status === "needs_action" ||
       i.status === "open" ||
       i.status === "patching",
   ).length;

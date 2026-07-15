@@ -6,7 +6,7 @@ export type ErrorType =
   | "SYNTAX_ERROR" | "PERMISSION_ERROR" | "RUNAWAY_LOOP" | "GENERIC";
 
 export type IncidentStatus =
-  | "open" | "patching" | "patched" | "low_confidence" | "approved" | "dismissed"
+  | "open" | "patching" | "patched" | "low_confidence" | "needs_action" | "approved" | "dismissed"
   | "pr_open" | "pr_failed" | "patch_stale" | "resolved";
 
 export type ValidationStatus =
