@@ -103,6 +103,11 @@ class IngestRequest(BaseModel):
     source: str = "unknown"
 
 
+class HeartbeatRequest(BaseModel):
+    """Liveness ping from the SDK: the agent is up and running."""
+    source: str = "sdk"
+
+
 class InterpretationUpdate(BaseModel):
     """Sent from daemon to backend when the LLM interpretation is ready."""
     event_id: str

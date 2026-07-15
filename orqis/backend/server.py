@@ -38,7 +38,7 @@ from .. import config
 from ..backend import deps, store, ws_manager, workspace_auth
 from ..backend import audit
 from ..backend.tenancy import get_workspace_id, reset_workspace_id, set_workspace_id
-from ..backend.models import ChangeLogEntry, Incident, IncidentStatus, IngestRequest, InterpretationUpdate, LogEvent, TraceEvent
+from ..backend.models import ChangeLogEntry, HeartbeatRequest, Incident, IncidentStatus, IngestRequest, InterpretationUpdate, LogEvent, TraceEvent
 from ..daemon import log_reader, normalizer
 
 
@@ -609,6 +609,29 @@ async def update_interpretation(request: Request, event_id: str, body: Interpret
 async def get_events(request: Request, limit: int = 100):
     await deps.resolve_dashboard_workspace(request)
     return await store.get_recent_events(limit=min(limit, 500))
+
+
+@app.post("/heartbeat", status_code=200)
+async def heartbeat(request: Request, body: HeartbeatRequest):
+    if config.MULTI_TENANT:
+        await deps.resolve_ingest_workspace(request)
+    else:
+        await deps.bind_workspace("default")
+    wid = get_workspace_id()
+    source = body.source or "sdk"
+    last_seen = await store.save_heartbeat(source)
+    await ws_manager.manager.broadcast(
+        "agent.status",
+        {"source": source, "status": "up", "last_seen": last_seen},
+        workspace_id=wid,
+    )
+    return {"ok": True}
+
+
+@app.get("/agents")
+async def get_agents(request: Request):
+    await deps.resolve_dashboard_workspace(request)
+    return await store.get_agent_statuses()
 
 
 @app.post("/trace", status_code=201)

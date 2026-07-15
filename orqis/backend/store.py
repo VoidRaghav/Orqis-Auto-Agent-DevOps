@@ -19,8 +19,8 @@ import redis.asyncio as aioredis
 
 from .. import config
 from ..backend import durable
-from ..backend.models import ChangeLogEntry, Incident, IncidentStatus, LogEvent, TraceEvent
-from .tenancy import get_workspace_id, tenant_prefix
+from ..backend.models import ChangeLogEntry, Incident, LogEvent, TraceEvent
+from .tenancy import tenant_prefix
 
 _redis_by_loop: dict[int, aioredis.Redis] = {}
 
@@ -65,6 +65,28 @@ async def scan_keys(pattern: str, *, count: int = 100) -> list[str]:
         if cursor == 0 or cursor == "0":
             break
     return found
+
+
+async def save_heartbeat(source: str, ttl: int = 90) -> str:
+    """Record that `source` is alive right now. The key expires after `ttl`
+    seconds, so an agent that stops pinging is naturally seen as down."""
+    r = await get_redis()
+    now = datetime.now(timezone.utc).isoformat()
+    await r.set(f"{_tp()}agent:{source}", now, ex=ttl)
+    return now
+
+
+async def get_agent_statuses() -> list[dict]:
+    """Last-seen time for every agent that has pinged this workspace recently."""
+    r = await get_redis()
+    tp = _tp()
+    prefix = f"{tp}agent:"
+    out: list[dict] = []
+    for key in await scan_keys(f"{prefix}*"):
+        last_seen = await r.get(key)
+        if last_seen:
+            out.append({"source": key[len(prefix):], "last_seen": last_seen})
+    return out
 
 
 async def save_event(event: LogEvent) -> None:

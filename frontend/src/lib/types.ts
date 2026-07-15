@@ -170,4 +170,11 @@ export type WsPayload =
   | { type: "incident.interpretation";data: Incident }
   | { type: "change.logged";          data: ChangeLogEntry }
   | { type: "settings.updated";       data: GithubConnectInfo }
+  | { type: "agent.status";           data: AgentStatus }
   | { type: "store.cleared";          data: Record<string, never> };
+
+export interface AgentStatus {
+  source: string;
+  status: string;
+  last_seen: string;
+}

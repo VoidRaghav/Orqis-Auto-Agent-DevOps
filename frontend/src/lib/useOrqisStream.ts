@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useReducer, useCallback } from "react";
-import type { LogEvent, TraceEvent, Incident, WsPayload, ChangeLogEntry, GithubConnectInfo } from "./types";
+import type { LogEvent, TraceEvent, Incident, WsPayload, ChangeLogEntry, GithubConnectInfo, AgentStatus } from "./types";
 import { MULTI_TENANT } from "./env";
 
 const MAX_EVENTS = 500;
@@ -25,6 +25,7 @@ interface State {
   traces: TraceEvent[];
   incidents: Incident[];
   changes: ChangeLogEntry[];
+  agents: Record<string, AgentStatus>;
   github: GithubConnectInfo | null;
   connected: boolean;
 }
@@ -39,6 +40,8 @@ type Action =
   | { type: "incident_upsert"; incident: Incident }
   | { type: "change_logged"; entry: ChangeLogEntry }
   | { type: "changes_loaded"; changes: ChangeLogEntry[] }
+  | { type: "agent_status"; agent: AgentStatus }
+  | { type: "agents_loaded"; agents: AgentStatus[] }
   | { type: "github_loaded"; github: GithubConnectInfo }
   | { type: "store_cleared" };
 
@@ -81,6 +84,13 @@ function reducer(state: State, action: Action): State {
     }
     case "changes_loaded":
       return { ...state, changes: action.changes };
+    case "agent_status":
+      return { ...state, agents: { ...state.agents, [action.agent.source]: action.agent } };
+    case "agents_loaded":
+      return {
+        ...state,
+        agents: Object.fromEntries(action.agents.map((a) => [a.source, a])),
+      };
     case "github_loaded":
       return { ...state, github: action.github };
     case "store_cleared":
@@ -90,7 +100,7 @@ function reducer(state: State, action: Action): State {
 
 export function useOrqisStream(wsUrl: string, apiUrl: string) {
   const [state, dispatch] = useReducer(reducer, {
-    events: [], traces: [], incidents: [], changes: [], github: null, connected: false,
+    events: [], traces: [], incidents: [], changes: [], agents: {}, github: null, connected: false,
   });
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -163,6 +173,9 @@ export function useOrqisStream(wsUrl: string, apiUrl: string) {
           case "change.logged":
             dispatch({ type: "change_logged", entry: payload.data });
             break;
+          case "agent.status":
+            dispatch({ type: "agent_status", agent: payload.data });
+            break;
           case "settings.updated":
             dispatch({ type: "github_loaded", github: payload.data });
             break;
@@ -187,6 +200,13 @@ export function useOrqisStream(wsUrl: string, apiUrl: string) {
       .then(r => r.json())
       .then((list: ChangeLogEntry[]) => {
         dispatch({ type: "changes_loaded", changes: [...list].reverse() });
+      })
+      .catch(() => {});
+
+    fetch(`${apiUrl}/agents`, init)
+      .then(r => r.json())
+      .then((list: AgentStatus[]) => {
+        if (Array.isArray(list)) dispatch({ type: "agents_loaded", agents: list });
       })
       .catch(() => {});
 

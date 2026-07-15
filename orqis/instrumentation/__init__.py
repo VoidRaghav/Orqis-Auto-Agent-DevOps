@@ -34,6 +34,7 @@ def init(
     backend_url: Optional[str] = None,
     source: str = "sdk",
     capture_logs: bool = True,
+    heartbeat: bool = True,
 ) -> None:
     """
     Initialize Orqis instrumentation.
@@ -44,6 +45,9 @@ def init(
         source:       Label shown on the dashboard for all events from this process.
         capture_logs: Stream the app's own log lines to the Activity feed
                       (INFO and above). Set False to send LLM traces only.
+        heartbeat:    Ping the backend every ~15s so the dashboard shows the
+                      agent as up (and as down if the process dies). Set False
+                      to disable liveness pings.
     """
     global _initialized, callback
 
@@ -73,13 +77,18 @@ def init(
         from ..instrumentation import logs
         logs.install(source=source)
 
+    if heartbeat:
+        from ..instrumentation import heartbeat as hb
+        hb.start(source=source)
+
     _initialized = True
 
     # One concise line so users can see what was detected and where events go.
     logger.info(
-        "orqis active: capturing [%s], logs=%s, backend=%s, api_key=%s (source=%s)",
+        "orqis active: capturing [%s], logs=%s, heartbeat=%s, backend=%s, api_key=%s (source=%s)",
         ", ".join(patched) if patched else "none detected",
         "on" if capture_logs else "off",
+        "on" if heartbeat else "off",
         config.BACKEND_URL,
         "set" if config.INGEST_API_KEY else "MISSING",
         source,
@@ -98,7 +107,9 @@ def shutdown() -> None:
     Calling multiple times is safe.
     """
     global _initialized
+    from ..instrumentation import heartbeat as hb
     from ..instrumentation import logs
+    hb.stop()
     logs.uninstall()
     emitter.shutdown()
     _initialized = False

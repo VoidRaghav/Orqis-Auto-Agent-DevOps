@@ -23,6 +23,7 @@ export default function Dashboard() {
     traces,
     incidents,
     changes,
+    agents,
     github,
     connected,
     approveIncident,
@@ -91,7 +92,7 @@ export default function Dashboard() {
     <div className="dashboard-page" data-mood={mood}>
       <OpsAmbientLayer mood={mood} />
       <div className="ops-page-content">
-      <DashboardNav connected={connected} totalCost={traceCost} github={github} />
+      <DashboardNav connected={connected} totalCost={traceCost} github={github} agents={agents} />
 
       <div className="dashboard-toolbar">
         <HealthHero

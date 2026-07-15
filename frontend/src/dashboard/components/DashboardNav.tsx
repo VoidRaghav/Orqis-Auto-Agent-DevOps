@@ -1,15 +1,18 @@
 import { Link, useLocation } from "react-router-dom";
 import { colors, fonts, mono } from "@/lib/tokens";
-import type { GithubConnectInfo } from "@/lib/types";
+import type { AgentStatus, GithubConnectInfo } from "@/lib/types";
+import AgentStatusPill from "./AgentStatusPill";
 
 export default function DashboardNav({
   connected,
   totalCost = 0,
   github,
+  agents,
 }: {
   connected: boolean;
   totalCost?: number;
   github: GithubConnectInfo | null;
+  agents?: Record<string, AgentStatus>;
 }) {
   const { pathname } = useLocation();
 
@@ -36,6 +39,7 @@ export default function DashboardNav({
             ${totalCost.toFixed(4)}
           </span>
         )}
+        {agents && <AgentStatusPill agents={agents} />}
         <span style={{ ...mono, fontSize: 10, color: connected ? colors.green : colors.red, display: "flex", alignItems: "center", gap: 6 }}>
           <span className="pulse-slow" style={{ width: 6, height: 6, borderRadius: "50%", background: connected ? colors.green : colors.red }} />
           {connected ? "LIVE" : "OFFLINE"}
