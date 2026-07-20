@@ -1,4 +1,4 @@
-.PHONY: ci unit integration frontend preflight tier-a tier-b test-agent up
+.PHONY: ci unit integration frontend preflight tier-a tier-b detectors test-agent up
 
 ci: unit integration frontend
 
@@ -7,6 +7,10 @@ up:
 
 unit:
 	pytest tests/unit/ tests/test_tenancy.py tests/test_scan_keys.py -v
+
+# Council milestone #3 — top-5 detector observe + remediation fixtures (LLM-free).
+detectors:
+	pytest tests/unit/test_detectors_top5.py tests/unit/test_remediation.py -v
 
 integration:
 	pytest tests/ -m integration -v

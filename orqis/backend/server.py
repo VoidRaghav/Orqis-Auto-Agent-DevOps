@@ -1038,6 +1038,52 @@ async def github_refresh_repos(request: Request):
     return connect
 
 
+@app.post("/integrations/github/verify-setup")
+async def github_verify_setup(request: Request):
+    """Wizard MVP done-check: app creds, install, repo access (no PR opened)."""
+    await deps.resolve_write_auth(request)
+    from ..integrations.github import auth as gh_auth
+    from ..integrations.github import client as gh_client
+
+    settings = await store.get_settings()
+    installation_id = settings.get("installation_id")
+    repos = list(settings.get("repos") or [])
+    webhook_ok = bool(config.GITHUB_WEBHOOK_SECRET) or config.DEV_MODE
+
+    checks = {
+        "app_configured": gh_auth.is_configured(),
+        "installation_connected": bool(installation_id),
+        "webhook_configured": webhook_ok,
+        "repos_granted": len(repos) > 0,
+        "repo_accessible": False,
+    }
+    probe_repo = None
+    if installation_id and repos:
+        probe_repo = repos[0]
+        try:
+            checks["repo_accessible"] = bool(
+                await gh_client.repo_accessible(int(installation_id), probe_repo)
+            )
+        except Exception:
+            checks["repo_accessible"] = False
+
+    ready = all(
+        [
+            checks["app_configured"],
+            checks["installation_connected"],
+            checks["webhook_configured"],
+            checks["repos_granted"],
+            checks["repo_accessible"],
+        ]
+    )
+    return {
+        "ok": ready,
+        "checks": checks,
+        "probe_repo": probe_repo,
+        "repos_count": len(repos),
+    }
+
+
 @app.get("/integrations/github/setup-status")
 async def github_setup_status(request: Request):
     await deps.resolve_dashboard_workspace(request)

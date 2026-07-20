@@ -53,15 +53,9 @@ REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
 # single-tenant mode (no auth, one shared "default" workspace) for local dev.
 DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 
-# Multi-tenant mode is on whenever a database is configured. In this mode the
-# ingest endpoints require a per-tenant API key and all state is scoped by it.
-MULTI_TENANT: bool = bool(DATABASE_URL)
-
 # GitHub OAuth (dashboard login). Distinct from the GitHub App credentials.
 GITHUB_OAUTH_CLIENT_ID: str = os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
 GITHUB_OAUTH_CLIENT_SECRET: str = os.getenv("GITHUB_OAUTH_CLIENT_SECRET", "")
-# Signs dashboard session cookies. Required in production; dev falls back.
-SESSION_SECRET: str = os.getenv("ORQIS_SESSION_SECRET", "orqis-dev-session-secret")
 
 # URL of the Orqis backend server (daemon pushes events here)
 BACKEND_URL: str = os.getenv("ORQIS_BACKEND_URL", "http://localhost:8000")
@@ -133,24 +127,26 @@ RELOAD_SECRET: str = os.getenv("ORQIS_RELOAD_SECRET", "")
 DEV_MODE: bool = os.getenv("ORQIS_DEV_MODE", "1").lower() in ("1", "true", "yes")
 
 # Multi-tenant hosted mode: per-workspace isolation, session + API-key auth.
+# Controlled ONLY by ORQIS_MULTI_TENANT (not inferred from DATABASE_URL).
 # Default off — local single-tenant uses workspace "default" with no login.
 MULTI_TENANT: bool = os.getenv("ORQIS_MULTI_TENANT", "0").lower() in ("1", "true", "yes")
 
 # Hosted SKU: disable local-disk patch apply (PR-only fixes).
 HOSTED: bool = os.getenv("ORQIS_HOSTED", "0").lower() in ("1", "true", "yes")
 
-# --- Dashboard session (GitHub OAuth) -----------------------------------------
-GITHUB_OAUTH_CLIENT_ID: str = os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
-GITHUB_OAUTH_CLIENT_SECRET: str = os.getenv("GITHUB_OAUTH_CLIENT_SECRET", "")
-SESSION_SECRET: str = os.getenv(
-    "ORQIS_SESSION_SECRET",
-    os.getenv("ORQIS_ADMIN_TOKEN", "") or "orqis-dev-session-change-me",
-)
+# --- Dashboard session cookie knobs ------------------------------------------
 SESSION_COOKIE_NAME: str = os.getenv("ORQIS_SESSION_COOKIE", "orqis_session")
 SESSION_COOKIE_SECURE: bool = os.getenv("ORQIS_SESSION_SECURE", "0").lower() in (
     "1",
     "true",
     "yes",
+)
+# Prefer explicit ORQIS_SESSION_SECRET; fall back to admin token only in legacy
+# single-tenant setups, then a weak placeholder that startup validation rejects
+# when MULTI_TENANT=1 outside DEV_MODE.
+SESSION_SECRET: str = os.getenv(
+    "ORQIS_SESSION_SECRET",
+    os.getenv("ORQIS_ADMIN_TOKEN", "") or "orqis-dev-session-change-me",
 )
 
 # Per-workspace ingest rate limit (requests per minute). 0 = unlimited.

@@ -39,6 +39,9 @@ out/
 # Local-only docs (not shared in the repo)
 ORQIS_OVERVIEW.md
 
+# LLM council session transcripts
+.cursor/council-sessions/
+
 # Editors
 .idea/
 .vscode/

@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { API_URL } from "@/lib/env";
 import type { GithubConnectInfo, GithubSetupStatus } from "@/lib/types";
-import { fetchGithubSetupStatus, startGithubRegister } from "@/lib/api";
+import {
+  fetchGithubSetupStatus,
+  startGithubRegister,
+  verifyGithubSetup,
+  type GithubVerifySetup,
+} from "@/lib/api";
 import { Card, Hint, Row, settingsColors } from "./SettingsUi";
 
 type Props = {
@@ -20,6 +25,14 @@ const STEPS = [
   { id: "ready", label: "Ready" },
 ] as const;
 
+const CHECK_LABELS: { key: keyof GithubVerifySetup["checks"]; label: string }[] = [
+  { key: "app_configured", label: "App credentials" },
+  { key: "installation_connected", label: "App installed" },
+  { key: "repos_granted", label: "Repos granted" },
+  { key: "webhook_configured", label: "Webhook configured" },
+  { key: "repo_accessible", label: "Repo API access" },
+];
+
 function stepIndex(status: GithubSetupStatus | null): number {
   if (!status?.app_configured) return 0;
   if (!status.connected) return 1;
@@ -31,6 +44,8 @@ export default function SettingsGithubWizard({ github, fetchOpts, onReload, onEr
   const [setup, setSetup] = useState<GithubSetupStatus | null>(null);
   const [registering, setRegistering] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verify, setVerify] = useState<GithubVerifySetup | null>(null);
 
   const loadSetup = useCallback(async () => {
     try {
@@ -48,7 +63,11 @@ export default function SettingsGithubWizard({ github, fetchOpts, onReload, onEr
   const grantedRepos = github?.repos?.length ? github.repos : [];
   const installUrl = setup?.install_url || github?.install_url || "";
   const repoCount = github?.repos.length ?? setup?.repos_count ?? 0;
-  const ready = current === 3 && !!setup?.webhook_configured;
+  const ready =
+    current === 3 &&
+    !!setup?.webhook_configured &&
+    repoCount > 0 &&
+    (verify?.ok ?? false);
 
   async function handleRegister() {
     setRegistering(true);
@@ -80,13 +99,27 @@ export default function SettingsGithubWizard({ github, fetchOpts, onReload, onEr
     }
   }
 
+  async function handleVerify() {
+    setVerifying(true);
+    try {
+      const result = await verifyGithubSetup(fetchOpts());
+      setVerify(result);
+      await loadSetup();
+      if (!result.ok) {
+        onError("GitHub setup incomplete — see checklist below.");
+      }
+    } catch (e) {
+      setVerify(null);
+      onError(String(e));
+    } finally {
+      setVerifying(false);
+    }
+  }
+
   return (
     <Card title="GitHub setup" accent={settingsColors.github} wide>
       <nav className="settings-wizard-steps" aria-label="GitHub setup progress">
         {STEPS.map((step, i) => {
-          // Steps before the current one are done; the final "Ready" step also
-          // shows done once the integration is actually ready (it is never
-          // "before current", so it would otherwise never get a check).
           const done = i < current || (i === current && ready);
           const active = i === current && !ready;
           return (
@@ -178,7 +211,7 @@ export default function SettingsGithubWizard({ github, fetchOpts, onReload, onEr
               </>
             )}
             {setup.webhook_configured && repoCount > 0 && (
-              <Hint>Almost there — refresh repos if you just updated installation access.</Hint>
+              <Hint>Almost there — verify setup to confirm repo API access.</Hint>
             )}
           </>
         )}
@@ -191,15 +224,41 @@ export default function SettingsGithubWizard({ github, fetchOpts, onReload, onEr
               tone={settingsColors.green}
             />
             {github?.account_login && <Row label="Account" value={github.account_login} />}
-            <button
-              type="button"
-              className="settings-btn settings-btn-ghost"
-              disabled={refreshing}
-              onClick={handleRefresh}
-            >
-              {refreshing ? "Refreshing…" : "Refresh repos"}
-            </button>
+            <div className="settings-wizard-actions">
+              <button
+                type="button"
+                className="settings-btn settings-btn-ghost"
+                disabled={refreshing}
+                onClick={handleRefresh}
+              >
+                {refreshing ? "Refreshing…" : "Refresh repos"}
+              </button>
+              <button
+                type="button"
+                className="settings-btn settings-btn-github"
+                disabled={verifying}
+                onClick={handleVerify}
+              >
+                {verifying ? "Verifying…" : "Verify setup"}
+              </button>
+            </div>
           </div>
+        )}
+
+        {verify && (
+          <ul className="settings-wizard-checklist" aria-label="GitHub setup checklist">
+            {CHECK_LABELS.map(({ key, label }) => {
+              const ok = verify.checks[key];
+              return (
+                <li key={key} className={ok ? "is-ok" : "is-fail"}>
+                  <span aria-hidden="true">{ok ? "✓" : "○"}</span> {label}
+                  {key === "repo_accessible" && verify.probe_repo
+                    ? ` (${verify.probe_repo})`
+                    : ""}
+                </li>
+              );
+            })}
+          </ul>
         )}
 
         {ready && (

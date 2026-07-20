@@ -119,21 +119,23 @@ def is_auto_merge_eligible(incident: Incident, settings: dict) -> bool:
     """
     Phase 2 — auto-merge is allowed only for deterministic, config-only fixes
     with a passing validation, and only when the toggle is on (I2/S5).
-    Never for LLM-generated code.
+    Never for LLM-generated code. Never for .github/ CI paths or traversal.
     """
+    from ...rca.safe_path import is_auto_merge_path_allowed, normalize_repo_path
+
     if not settings.get("auto_merge_enabled"):
         return False
     if incident.fix_method != "deterministic":
         return False
     if incident.validation_status.value != "passed":
         return False
-    path = (incident.repo_relative_path or "").lower()
-    if not path:
+    path = normalize_repo_path(incident.repo_relative_path or "")
+    if not path or not is_auto_merge_path_allowed(path):
         return False
-    basename = path.split("/")[-1]
+    basename = path.split("/")[-1].lower()
     if basename in _CONFIG_DENYLIST_EXACT:
         return False
-    if basename in _CONFIG_ALLOWLIST_EXACT:
+    if basename in {p.lower() for p in _CONFIG_ALLOWLIST_EXACT}:
         return True
     return any(basename.endswith(suf) for suf in _CONFIG_ALLOWLIST_SUFFIX)
 
@@ -147,21 +149,6 @@ async def open_fix_pr(incident: Incident) -> None:
         return  # already has a PR (A4)
     if not incident.diff or not incident.repo_full_name:
         return
-
-    secret_hits = scan_for_secrets(incident.diff)
-    if secret_hits:
-        await _fail(
-            IncidentStatus.PR_FAILED,
-            "diff blocked by secret scan: " + "; ".join(secret_hits[:3]),
-        )
-        return
-
-    settings = await store.get_settings()
-    installation_id = settings.get("installation_id")
-    if not installation_id:
-        return
-
-    repo = incident.repo_full_name
 
     async def _fail(status: IncidentStatus, reason: str) -> None:
         updated = await store.update_incident(
@@ -182,6 +169,21 @@ async def open_fix_pr(incident: Incident) -> None:
                 reason,
             )
 
+    secret_hits = scan_for_secrets(incident.diff)
+    if secret_hits:
+        await _fail(
+            IncidentStatus.PR_FAILED,
+            "diff blocked by secret scan: " + "; ".join(secret_hits[:3]),
+        )
+        return
+
+    settings = await store.get_settings()
+    installation_id = settings.get("installation_id")
+    if not installation_id:
+        return
+
+    repo = incident.repo_full_name
+
     if not await client.repo_accessible(installation_id, repo):
         await _fail(IncidentStatus.PR_FAILED, "repo not accessible to the Orqis app")
         return
@@ -200,16 +202,32 @@ async def open_fix_pr(incident: Incident) -> None:
     base_branch, head_sha = default
 
     from ...rca.diff_split import split_by_file
+    from ...rca.safe_path import normalize_repo_path, validate_commit_paths
 
     segments = split_by_file(incident.diff)
     if not segments:
         await _fail(IncidentStatus.PR_FAILED, "no parseable file paths in diff")
         return
 
+    cleaned_segments: list[tuple[str, str]] = []
+    for path, seg_diff in segments:
+        cleaned = normalize_repo_path(path)
+        if cleaned is None:
+            await _fail(
+                IncidentStatus.PR_FAILED,
+                f"unsafe repo path in diff rejected: {path!r}",
+            )
+            return
+        cleaned_segments.append((cleaned, seg_diff))
+    path_err = validate_commit_paths([p for p, _ in cleaned_segments])
+    if path_err:
+        await _fail(IncidentStatus.PR_FAILED, path_err)
+        return
+
     from ...rca.validator import validate
 
     files_to_commit: list[tuple[str, str]] = []
-    for path, seg_diff in segments:
+    for path, seg_diff in cleaned_segments:
         normalized = apply_diff.rewrite_diff_paths(seg_diff, path)
         fetched = await client.get_file(installation_id, repo, path, head_sha)
         if fetched is None:

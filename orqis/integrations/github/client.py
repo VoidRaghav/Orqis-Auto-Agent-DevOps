@@ -208,6 +208,19 @@ async def commit_files(
     """
     if not files:
         return None
+
+    from ...rca.safe_path import normalize_repo_path, validate_commit_paths
+
+    cleaned_files: list[tuple[str, str]] = []
+    for path, content in files:
+        cleaned = normalize_repo_path(path)
+        if cleaned is None:
+            return None
+        cleaned_files.append((cleaned, content))
+    if validate_commit_paths([p for p, _ in cleaned_files]) is not None:
+        return None
+    files = cleaned_files
+
     headers = await _headers(installation_id)
     if headers is None:
         return None

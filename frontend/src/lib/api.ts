@@ -47,6 +47,28 @@ export async function startGithubRegister(opts: RequestInit = {}): Promise<{ reg
   return r.json();
 }
 
+export type GithubVerifySetup = {
+  ok: boolean;
+  checks: {
+    app_configured: boolean;
+    installation_connected: boolean;
+    webhook_configured: boolean;
+    repos_granted: boolean;
+    repo_accessible: boolean;
+  };
+  probe_repo: string | null;
+  repos_count: number;
+};
+
+export async function verifyGithubSetup(opts: RequestInit = {}): Promise<GithubVerifySetup> {
+  const r = await fetch(`${API_URL}/integrations/github/verify-setup`, {
+    method: "POST",
+    ...opts,
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function fetchSettings(adminToken = ""): Promise<WorkspaceSettings> {
   const r = await fetch(`${API_URL}/settings`, apiFetchOpts(adminToken));
   return r.json();
