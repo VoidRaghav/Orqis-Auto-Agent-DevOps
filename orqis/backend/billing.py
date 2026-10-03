@@ -100,7 +100,8 @@ async def _plan_id_for(
 ) -> str:
     """Reuse one plan per price so repeat subscribes don't spawn duplicate plans."""
     r = await store.get_redis()
-    cache_key = f"orqis:razorpay:plan:{currency}:{period}:{interval}:{amount}"
+    # Keyed by account so switching test -> live keys never reuses a foreign plan id.
+    cache_key = f"orqis:razorpay:plan:{config.RAZORPAY_KEY_ID}:{currency}:{period}:{interval}:{amount}"
     cached = await r.get(cache_key)
     if cached:
         return cached
