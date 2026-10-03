@@ -68,6 +68,69 @@ export async function saveSettings(
   });
 }
 
+export type Plan = {
+  id: string;
+  name: string;
+  amount: number;
+  currency: string;
+  display: string;
+  period: string;
+};
+
+export type SubscriptionInfo = {
+  status: string;
+  subscription_id?: string;
+  plan?: string;
+  amount?: number;
+  currency?: string;
+  display?: string;
+  since?: string;
+};
+
+export async function fetchPlans(currency: string, adminToken = ""): Promise<Plan[]> {
+  const r = await fetch(
+    `${API_URL}/billing/plans?currency=${encodeURIComponent(currency)}`,
+    apiFetchOpts(adminToken),
+  );
+  if (!r.ok) throw new Error(await r.text());
+  return (await r.json()).plans;
+}
+
+export async function fetchSubscription(adminToken = ""): Promise<SubscriptionInfo> {
+  const r = await fetch(`${API_URL}/billing/subscription`, apiFetchOpts(adminToken));
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function createSubscription(
+  plan: string,
+  currency: string,
+  adminToken = "",
+): Promise<{ subscription_id: string; key_id: string; amount: number; currency: string }> {
+  const r = await fetch(`${API_URL}/billing/create-subscription`, {
+    ...apiJsonOpts(adminToken, "POST"),
+    body: JSON.stringify({ plan, currency }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function verifySubscription(
+  payload: {
+    razorpay_payment_id: string;
+    razorpay_subscription_id: string;
+    razorpay_signature: string;
+  },
+  adminToken = "",
+): Promise<{ verified: boolean; subscription: SubscriptionInfo }> {
+  const r = await fetch(`${API_URL}/billing/verify-subscription`, {
+    ...apiJsonOpts(adminToken, "POST"),
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export type ApiKeySummary = { id: string; prefix: string; label: string };
 export type MemberSummary = { github_id: number; login: string; role: string };
 export type InviteSummary = { token: string; created_at: string; url?: string };

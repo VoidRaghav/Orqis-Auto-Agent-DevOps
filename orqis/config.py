@@ -66,6 +66,14 @@ SESSION_SECRET: str = os.getenv("ORQIS_SESSION_SECRET", "orqis-dev-session-secre
 # URL of the Orqis backend server (daemon pushes events here)
 BACKEND_URL: str = os.getenv("ORQIS_BACKEND_URL", "http://localhost:8000")
 
+# Razorpay (subscription billing). The secret is used server-side only to call
+# the Razorpay API and verify payment signatures; it must never reach the frontend.
+RAZORPAY_KEY_ID: str = os.getenv("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET: str = os.getenv("RAZORPAY_KEY_SECRET", "")
+# Plan prices are defined in USD; Indian customers are charged the converted
+# rupee amount at this rate. Override as the exchange rate moves.
+USD_TO_INR: float = float(os.getenv("USD_TO_INR", "83"))
+
 # Keep interpretation short - one clear sentence is enough
 LLM_MAX_TOKENS: int = 80
 

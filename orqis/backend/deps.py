@@ -46,6 +46,18 @@ async def bind_workspace(workspace_id: str) -> str:
     return workspace_id
 
 
+async def current_github_id(request: Request) -> Optional[int]:
+    """GitHub id of the logged-in dashboard user, if any (for audit/billing)."""
+    session_id = _session_cookie(request)
+    if not session_id:
+        return None
+    session = await workspace_auth.get_session(session_id)
+    if not session:
+        return None
+    gid = session.get("github_id")
+    return int(gid) if gid is not None else None
+
+
 async def resolve_ingest_workspace(request: Request) -> str:
     """
     Ingest: API key when multi-tenant; else default workspace (local dev).

@@ -36,9 +36,9 @@ from fastapi.responses import RedirectResponse
 
 from .. import config
 from ..backend import deps, store, ws_manager, workspace_auth
-from ..backend import audit
+from ..backend import audit, billing
 from ..backend.tenancy import get_workspace_id, reset_workspace_id, set_workspace_id
-from ..backend.models import ChangeLogEntry, HeartbeatRequest, Incident, IncidentStatus, IngestRequest, InterpretationUpdate, LogEvent, TraceEvent
+from ..backend.models import ChangeLogEntry, CreateSubscriptionRequest, HeartbeatRequest, Incident, IncidentStatus, IngestRequest, InterpretationUpdate, LogEvent, TraceEvent, VerifySubscriptionRequest
 from ..daemon import log_reader, normalizer
 
 
@@ -115,6 +115,16 @@ async def lifespan(app: FastAPI):
                 "— serving from Redis only until Postgres is reachable",
                 file=sys.stderr,
             )
+
+    # Payments need Postgres in every mode (incl. multi-tenant), so ensure the
+    # subscriptions table exists independently of the durable-store gate.
+    try:
+        await billing.ensure_schema()
+    except Exception as e:
+        print(
+            f"[orqis] WARNING: billing schema init failed ({type(e).__name__}: {e})",
+            file=sys.stderr,
+        )
 
     # Safety net: reconcile any incidents stuck in pr_open whose merge webhook
     # was missed or misconfigured (U1/P4). Runs every 5 minutes.
@@ -632,6 +642,69 @@ async def heartbeat(request: Request, body: HeartbeatRequest):
 async def get_agents(request: Request):
     await deps.resolve_dashboard_workspace(request)
     return await store.get_agent_statuses()
+
+
+@app.get("/billing/plans")
+async def billing_plans(currency: str = "USD"):
+    # Public price list so the app shows server-defined amounts the user can't alter.
+    return {"plans": billing.list_plans(currency)}
+
+
+@app.post("/billing/create-subscription")
+async def create_subscription(request: Request, body: CreateSubscriptionRequest):
+    # Subscribing is scoped to the logged-in workspace.
+    if config.MULTI_TENANT:
+        await deps.resolve_dashboard_workspace(request)
+    else:
+        await deps.bind_workspace("default")
+    if not billing.configured():
+        raise HTTPException(status_code=503, detail="billing not configured")
+    wid = get_workspace_id()
+    github_id = await deps.current_github_id(request)
+    try:
+        result = await billing.create_subscription(body.plan, body.currency)
+        subscription_id = result["subscription"]["id"]
+        # Record the intended plan + server price before payment; verify reads it back.
+        await billing.create_pending(wid, subscription_id, body.plan, body.currency, github_id)
+    except billing.BillingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "subscription_id": subscription_id,
+        "key_id": config.RAZORPAY_KEY_ID,
+        "amount": result["amount"],
+        "currency": result["currency"],
+    }
+
+
+@app.post("/billing/verify-subscription")
+async def verify_subscription(request: Request, body: VerifySubscriptionRequest):
+    if config.MULTI_TENANT:
+        await deps.resolve_dashboard_workspace(request)
+    else:
+        await deps.bind_workspace("default")
+    if not (body.razorpay_payment_id and body.razorpay_subscription_id and body.razorpay_signature):
+        raise HTTPException(status_code=400, detail="missing payment fields")
+    if not billing.verify_signature(
+        body.razorpay_payment_id, body.razorpay_subscription_id, body.razorpay_signature
+    ):
+        raise HTTPException(status_code=400, detail="signature verification failed")
+    # Activate using the server's own pending record — the plan/amount charged
+    # come from there, never from the client.
+    record = await billing.activate(
+        get_workspace_id(), body.razorpay_subscription_id, body.razorpay_payment_id
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="no matching subscription for this workspace")
+    return {"verified": True, "subscription": record}
+
+
+@app.get("/billing/subscription")
+async def billing_subscription(request: Request):
+    if config.MULTI_TENANT:
+        await deps.resolve_dashboard_workspace(request)
+    else:
+        await deps.bind_workspace("default")
+    return await billing.get_subscription(get_workspace_id()) or {"status": "none"}
 
 
 @app.post("/trace", status_code=201)

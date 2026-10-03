@@ -203,3 +203,27 @@ class WorkspaceSettings(Base):
     updated_at: Mapped[_dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=_utcnow
     )
+
+
+class SubscriptionRow(Base):
+    """A Razorpay subscription — the payment system of record. Amount and plan
+    are written from the server catalog at creation and never trust the client."""
+
+    __tablename__ = "subscriptions"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(40), index=True, default="default")
+    razorpay_subscription_id: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    razorpay_payment_id: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    plan: Mapped[str] = mapped_column(String(40))
+    amount: Mapped[int] = mapped_column(Integer)  # smallest unit (cents / paise)
+    currency: Mapped[str] = mapped_column(String(8))
+    status: Mapped[str] = mapped_column(String(20), index=True, default="created")
+    github_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    github_login: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[_dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[_dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=_utcnow
+    )

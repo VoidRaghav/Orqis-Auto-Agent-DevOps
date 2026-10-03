@@ -34,6 +34,7 @@ import SettingsRoutingCard from "@/components/settings/SettingsRoutingCard";
 import SettingsDeployCard from "@/components/settings/SettingsDeployCard";
 import SettingsAutomationCard from "@/components/settings/SettingsAutomationCard";
 import SettingsAdminCard from "@/components/settings/SettingsAdminCard";
+import SettingsBillingCard from "@/components/settings/SettingsBillingCard";
 
 const ADMIN_TOKEN_KEY = "orqis_admin_token";
 
@@ -241,6 +242,8 @@ export default function SettingsPage() {
               mcpCopied={mcpCopied}
               onCopyMcp={copyMcpConfig}
             />
+
+            <SettingsBillingCard adminToken={adminToken} />
 
             {settings && (
               <SettingsNotificationsCard

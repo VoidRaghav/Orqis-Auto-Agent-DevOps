@@ -108,6 +108,21 @@ class HeartbeatRequest(BaseModel):
     source: str = "sdk"
 
 
+class CreateSubscriptionRequest(BaseModel):
+    """Start a Razorpay subscription for a catalog plan. The amount is derived
+    server-side from the plan + currency — never supplied by the client."""
+    plan: str
+    currency: str = "USD"
+
+
+class VerifySubscriptionRequest(BaseModel):
+    """Confirm a Razorpay subscription payment via its signature. The plan and
+    amount are read from the server's own record, never from the client."""
+    razorpay_payment_id: str
+    razorpay_subscription_id: str
+    razorpay_signature: str
+
+
 class InterpretationUpdate(BaseModel):
     """Sent from daemon to backend when the LLM interpretation is ready."""
     event_id: str
