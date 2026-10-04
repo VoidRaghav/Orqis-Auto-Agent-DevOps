@@ -13,4 +13,5 @@ RUN pip install --no-cache-dir -e .
 
 EXPOSE 8000
 
-CMD ["orqis", "start", "--host", "0.0.0.0", "--port", "8000"]
+# Hosts like Render/Railway inject $PORT; default to 8000 locally.
+CMD ["sh", "-c", "orqis start --host 0.0.0.0 --port ${PORT:-8000}"]

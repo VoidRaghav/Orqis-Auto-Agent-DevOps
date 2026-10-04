@@ -1,0 +1,53 @@
+# Render Blueprint: New + -> Blueprint -> pick this repo.
+# Secrets marked sync:false are prompted for in the dashboard (never committed).
+services:
+  - type: web
+    name: orqis-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter          # free plan sleeps after 15 min idle, which breaks the agent heartbeat
+    healthCheckPath: /health
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: orqis-redis
+          property: connectionString
+      - key: ORQIS_HOSTED
+        value: "1"
+      - key: ORQIS_SESSION_SECURE
+        value: "1"
+      - key: ORQIS_SESSION_SECRET
+        generateValue: true
+      - key: USD_TO_INR
+        value: "83"
+      - key: ORQIS_PUBLIC_URL
+        sync: false        # https://<service>.onrender.com
+      - key: ORQIS_BACKEND_URL
+        sync: false        # same as above
+      - key: ORQIS_CORS_ORIGINS
+        sync: false        # your frontend origin(s), comma separated
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_SLUG
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: GITHUB_OAUTH_CLIENT_ID
+        sync: false
+      - key: GITHUB_OAUTH_CLIENT_SECRET
+        sync: false
+
+  - type: keyvalue
+    name: orqis-redis
+    plan: starter
+    ipAllowList: []        # internal connections only
+    maxmemoryPolicy: noeviction
